@@ -3,6 +3,8 @@
 
 add_library(hoyoflux_scan STATIC
   module_snapshot.cpp
+  compiled_pattern.cpp
+  pattern_scanner.cpp
 )
 
 target_include_directories(hoyoflux_scan PUBLIC ${CMAKE_SOURCE_DIR}/src)
