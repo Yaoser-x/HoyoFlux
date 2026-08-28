@@ -16,3 +16,8 @@ FetchContent_MakeAvailable(catch2)
 add_executable(domain_test domain_test.cpp)
 target_link_libraries(domain_test PRIVATE hoyoflux_domain Catch2::Catch2WithMain)
 add_test(NAME domain_test COMMAND domain_test)
+
+add_executable(win32_test win32_test.cpp)
+target_link_libraries(win32_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
+                      Catch2::Catch2WithMain)
+add_test(NAME win32_test COMMAND win32_test)

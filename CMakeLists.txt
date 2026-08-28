@@ -16,7 +16,9 @@ option(HOYOFLUX_BUILD_BENCHMARKS "Build the benchmarks" OFF)
 # day the project is built with Visual Studio again.
 # ---------------------------------------------------------------------------
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  # Note: -Wpedantic is intentionally omitted; Catch2's test registration
+  # uses __COUNTER__ which triggers -Wc2y-extensions under -Wpedantic.
+  add_compile_options(-Wall -Wextra)
 elseif(MSVC)
   add_compile_options(/W4 /permissive- /Zc:__cplusplus)
 endif()
@@ -27,6 +29,7 @@ endif()
 # Each component declares its own target in its own CMakeLists.txt.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/domain)
+add_subdirectory(src/platform/win32)
 
 if(HOYOFLUX_BUILD_TESTS)
   enable_testing()
