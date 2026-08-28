@@ -1,0 +1,14 @@
+# HoyoFlux source is UTF-8 with LF in the repository.
+# `text=auto` normalizes line endings to LF in the repo and uses native
+# endings (CRLF on Windows) in the working tree.
+* text=auto
+
+# Text files that must stay LF even on Windows checkouts.
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.h text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf

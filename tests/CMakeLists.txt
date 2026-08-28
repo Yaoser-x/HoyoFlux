@@ -1,0 +1,18 @@
+# Unit tests for all components. Each test executable is registered with
+# add_test() so `ctest --preset <name>` runs everything.
+
+include(FetchContent)
+
+# Catch2 v3 (test framework, built from source; header dependency of tests only)
+FetchContent_Declare(
+  catch2
+  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+  GIT_TAG        v3.9.1
+  GIT_SHALLOW    TRUE
+  GIT_PROGRESS   TRUE
+)
+FetchContent_MakeAvailable(catch2)
+
+add_executable(domain_test domain_test.cpp)
+target_link_libraries(domain_test PRIVATE hoyoflux_domain Catch2::Catch2WithMain)
+add_test(NAME domain_test COMMAND domain_test)
