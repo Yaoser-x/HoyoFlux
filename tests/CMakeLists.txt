@@ -21,3 +21,8 @@ add_executable(win32_test win32_test.cpp)
 target_link_libraries(win32_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
                       Catch2::Catch2WithMain)
 add_test(NAME win32_test COMMAND win32_test)
+
+add_executable(scan_test scan_test.cpp)
+target_link_libraries(scan_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
+                      hoyoflux_scan Catch2::Catch2WithMain)
+add_test(NAME scan_test COMMAND scan_test)

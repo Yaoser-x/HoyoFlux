@@ -30,6 +30,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_subdirectory(src/domain)
 add_subdirectory(src/platform/win32)
+add_subdirectory(src/scan)
 
 if(HOYOFLUX_BUILD_TESTS)
   enable_testing()
