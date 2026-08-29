@@ -1,5 +1,6 @@
 #include "game/starrail/starrail_adapter.hpp"
 
+#include "game/starrail/mobile_ui.hpp"
 #include "game/starrail/signatures.hpp"
 #include "platform/win32/registry.hpp"
 #include "scan/pattern_scanner.hpp"
@@ -58,10 +59,11 @@ CapabilityReport StarRailAdapter::capabilities(const GameInstall& /*install*/,
         "monitor selection has no verified mechanism for Star Rail in this "
         "build; remove \"monitor\" from the profile");
 
-    // The UISet signatures exist in the table but no PatchPlan builder
-    // applies them yet (plan F5); requesting mobile UI must stop.
+    // F5: per-game builder exists; payload gated off until validated on the
+    // live game (plan B1).
     add(Capability::MobileUi, CapabilityStatus::Unsupported,
-        "Mobile UI is not implemented for Star Rail in this build");
+        "Mobile UI is not implemented for Star Rail in this build: the "
+        "builder exists but its payload is unvalidated (plan B1)");
 
     add(Capability::CustomDpi, CapabilityStatus::Unsupported,
         "custom DPI has no mechanism for Star Rail in this build");
@@ -192,6 +194,22 @@ Result<PatchPlan> StarRailAdapter::build_patch_plan(const PatchContext& context)
     // No RemoteState allocation: nothing here references it. A future
     // resident component (dynamic FPS) re-writes the game variable via the
     // same address; the mov flip keeps our value authoritative.
+
+    // Mobile UI (F5): same real-game gate as Genshin - the mechanism exists
+    // (starrail::StarRailMobileUiPatchBuilder) but the payload is unvalidated.
+    if (context.profile.ui.mobile_ui) {
+        if (!starrail::StarRailMobileUiPatchBuilder::kPayloadValidated) {
+            return std::unexpected(Error::make(
+                ErrorCode::NotSupported,
+                "Mobile UI stub payload has not been validated against the "
+                "live game yet (real-game gate, plan B1); refusing to patch "
+                "blindly"));
+        }
+        if (auto added = starrail::StarRailMobileUiPatchBuilder::add_operations(plan, context);
+            !added) {
+            return std::unexpected(added.error());
+        }
+    }
     return plan;
 }
 

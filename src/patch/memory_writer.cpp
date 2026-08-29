@@ -96,8 +96,12 @@ Result<void> write_protected(const win32::UniqueHandle& process, uintptr_t addre
     return {};
 }
 
-Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
-                                uintptr_t near_address, size_t size) {
+namespace {
+
+// Shared walk used by both allocation flavors.
+Result<uintptr_t> allocate_near_protect(const win32::UniqueHandle& process,
+                                        uintptr_t near_address, size_t size,
+                                        DWORD protect) {
     const size_t block = (size + kPageSize - 1) & ~(kPageSize - 1);
     if (block == 0 || block > 0x10000000) {
         return std::unexpected(
@@ -113,7 +117,7 @@ Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
         }
         LPVOID allocated = VirtualAllocEx(
             process.get(), reinterpret_cast<LPVOID>(candidate), block,
-            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            MEM_COMMIT | MEM_RESERVE, protect);
         if (allocated != nullptr) {
             return reinterpret_cast<uintptr_t>(allocated);
         }
@@ -129,6 +133,19 @@ Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
     return std::unexpected(Error::make(
         ErrorCode::RemoteAllocFailed,
         "no free page below " + std::to_string(near_address)));
+}
+
+}  // namespace
+
+Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
+                                uintptr_t near_address, size_t size) {
+    return allocate_near_protect(process, near_address, size, PAGE_READWRITE);
+}
+
+Result<uintptr_t> allocate_code_near(const win32::UniqueHandle& process,
+                                     uintptr_t near_address, size_t size) {
+    return allocate_near_protect(process, near_address, size,
+                                 PAGE_EXECUTE_READWRITE);
 }
 
 Result<void> free_remote(const win32::UniqueHandle& process, uintptr_t address) {

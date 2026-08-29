@@ -7,8 +7,10 @@ add_library(hoyoflux_game STATIC
   launch/launch_plan.cpp
   genshin/signatures.cpp
   genshin/genshin_adapter.cpp
+  genshin/mobile_ui.cpp
   starrail/signatures.cpp
   starrail/starrail_adapter.cpp
+  starrail/mobile_ui.cpp
 )
 
 target_include_directories(hoyoflux_game PUBLIC ${CMAKE_SOURCE_DIR}/src)

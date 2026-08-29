@@ -1,5 +1,6 @@
 #include "game/genshin/genshin_adapter.hpp"
 
+#include "game/genshin/mobile_ui.hpp"
 #include "game/genshin/signatures.hpp"
 #include "platform/win32/registry.hpp"
 #include "scan/pattern_scanner.hpp"
@@ -77,8 +78,11 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
         "monitor selection has no verified mechanism for Genshin in this "
         "build; remove \"monitor\" from the profile");
 
+    // F5: bootstrap mechanism exists (stub install + remote invocation);
+    // the payload stays gated off until validated on the live game (B1).
     add(Capability::MobileUi, CapabilityStatus::Unsupported,
-        "Mobile UI is not implemented for Genshin in this build");
+        "Mobile UI is not implemented for Genshin in this build: the "
+        "bootstrap mechanism exists but its payload is unvalidated (plan B1)");
 
     add(Capability::CustomDpi,
         profile.ui.dpi_scale.has_value() ? CapabilityStatus::Supported
@@ -261,12 +265,29 @@ Result<PatchPlan> GenshinAdapter::build_patch_plan(const PatchContext& context) 
             PatchOperation::write_bytes(dpi->fields[0], prologue));
     }
 
+    // Mobile UI (F5): the bootstrap mechanism exists (stub install + remote
+    // invocation, see genshin::GenshinMobileUiPatchBuilder) but the payload has not
+    // been validated against the live game yet (plan B1). Until then the
+    // gate below refuses to patch - the capability contract reports MobileUi
+    // as Unsupported, so validate_profile normally stops the launch first.
+    if (context.profile.ui.mobile_ui) {
+        if (!genshin::GenshinMobileUiPatchBuilder::kPayloadValidated) {
+            return std::unexpected(Error::make(
+                ErrorCode::NotSupported,
+                "Mobile UI stub payload has not been validated against the "
+                "live game yet (real-game gate, plan B1); refusing to patch "
+                "blindly"));
+        }
+        if (auto added = genshin::GenshinMobileUiPatchBuilder::add_operations(plan, context);
+            !added) {
+            return std::unexpected(added.error());
+        }
+    }
+
     // Deliberately deferred (in-process only, see the 1.0.0 plan §A6
-    // "注入方式目标"): the verify detour, the UI-unhook detour, the
-    // il2cpp MobileUI calls and the in-game fps-set hook all execute code
-    // inside the game and need a bootstrap thread the external-only model
-    // does not provide. They stay unapplied until real-game validation
-    // (plan verification point 1) proves one is required, in which case a
+    // "注入方式目标"): the verify detour, the UI-unhook detour and the
+    // in-game fps-set hook execute code inside the game and stay unapplied
+    // until real-game validation proves one is required, in which case a
     // minimal targeted stub gets added with a recorded reason.
     return plan;
 }

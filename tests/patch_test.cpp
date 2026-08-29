@@ -4,6 +4,7 @@
 
 #include "patch/memory_writer.hpp"
 #include "patch/patch_engine.hpp"
+#include "patch/x64_emit.hpp"
 #include "patch/remote_state.hpp"
 #include "platform/win32/process.hpp"
 
@@ -255,4 +256,68 @@ TEST_CASE("redirect beyond +-2GB is rejected", "[patch][engine]") {
     auto applied = patch::apply_patch_plan(process, plan);
     REQUIRE_FALSE(applied.has_value());
     CHECK(applied.error().code == ErrorCode::PatchFailed);
+}
+
+TEST_CASE("x64 emitter emits documented bytes", "[patch][x64]") {
+    std::vector<std::byte> code;
+    using patch::x64::emit_call_rax;
+    using patch::x64::emit_mov_rax_imm64;
+    using patch::x64::emit_prologue_shadow;
+    using patch::x64::emit_ret;
+
+    CHECK(emit_prologue_shadow(code) == 4);
+    CHECK(emit_mov_rax_imm64(code, 0x7FF600001234) == 10);
+    CHECK(emit_call_rax(code) == 2);
+    CHECK(emit_ret(code) == 1);
+
+    REQUIRE(code.size() == 17);
+    const unsigned char expected[] = {
+        0x48, 0x83, 0xEC, 0x28,                    // sub rsp, 0x28
+        0x48, 0xB8, 0x34, 0x12, 0x00, 0x00, 0xF6, 0x7F,
+        0x00, 0x00,                                // mov rax, imm64
+        0xFF, 0xD0,                                // call rax
+        0xC3};                                     // ret
+    CHECK(std::memcmp(code.data(), expected, sizeof(expected)) == 0);
+}
+
+TEST_CASE("engine installs and invokes a bootstrap stub, rollback frees it",
+          "[patch][engine][f5]") {
+    const auto process = self_process();
+
+    PatchPlan plan;
+    plan.runtime.near_address = 0x600000000;  // anchor for the code page walk
+    // mov eax, 42 ; ret - a stub that provably ran by its exit code.
+    std::vector<std::byte> stub{std::byte{0xB8}, std::byte{42},
+                                std::byte{0x00}, std::byte{0x00},
+                                std::byte{0x00}, std::byte{0xC3}};
+    plan.operations.push_back(
+        PatchOperation::install_code_stub(std::move(stub)));
+    plan.operations.push_back(PatchOperation::invoke_bootstrap(0, 5000));
+
+    auto applied = patch::apply_patch_plan(process, plan);
+    REQUIRE(applied.has_value());
+    REQUIRE(applied->stubs.size() == 1);
+    CHECK(applied->stubs[0].base != 0);
+    CHECK(applied->stubs[0].size == 6);
+
+    // The stub page is readable back byte-exact.
+    std::vector<std::byte> read_back(6);
+    REQUIRE(patch::read_bytes(process, applied->stubs[0].base, read_back)
+                .has_value());
+    CHECK(read_back[1] == std::byte{42});
+
+    // InvokeBootstrap with an unknown index fails and rolls the page back.
+    PatchPlan bad_plan;
+    bad_plan.runtime.near_address = 0x600000000;
+    std::vector<std::byte> dummy{std::byte{0xC3}};
+    bad_plan.operations.push_back(
+        PatchOperation::install_code_stub(std::move(dummy)));
+    bad_plan.operations.push_back(PatchOperation::invoke_bootstrap(7, 1000));
+    auto bad = patch::apply_patch_plan(process, bad_plan);
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error().code == ErrorCode::PatchFailed);
+
+    // Explicit rollback releases the first plan's page too.
+    REQUIRE(patch::rollback_patch_plan(process, *applied).has_value());
+    CHECK(applied->stubs.empty());
 }

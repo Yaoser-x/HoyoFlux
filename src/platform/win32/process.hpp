@@ -72,4 +72,11 @@ Result<void> terminate_and_wait(const UniqueHandle& process, uint32_t timeout_ms
 Result<void> suspend_process_threads(DWORD pid);
 Result<void> resume_process_threads(DWORD pid);
 
+// F5: run `start_address` in the remote process via CreateRemoteThread and
+// return the thread handle (the caller waits and releases it through RAII).
+// This is the minimal bootstrap invocation primitive - no DLL loading, no
+// shellcode loader.
+Result<UniqueHandle> create_remote_thread(const UniqueHandle& process,
+                                          uintptr_t start_address);
+
 }  // namespace hoyoflux::win32

@@ -1,5 +1,6 @@
 #include "patch/patch_engine.hpp"
 
+#include "platform/win32/process.hpp"
 #include "patch/memory_writer.hpp"
 #include "patch/remote_state.hpp"
 
@@ -41,7 +42,8 @@ uintptr_t resolve_target(const PatchOperation& op,
 
 Result<AppliedOperation> apply_one(const win32::UniqueHandle& process,
                                    const PatchOperation& op,
-                                   const RemoteStateLayout& runtime) {
+                                   const RemoteStateLayout& runtime,
+                                   std::vector<AppliedStub>& stubs) {
     AppliedOperation record;
     record.op = op;
 
@@ -88,6 +90,61 @@ Result<AppliedOperation> apply_one(const win32::UniqueHandle& process,
         }
         break;
     }
+
+    case PatchOperationKind::InstallCodeStub: {
+        if (runtime.near_address == 0) {
+            return std::unexpected(Error::make(
+                ErrorCode::PatchFailed,
+                "InstallCodeStub requires the plan's module anchor"));
+        }
+        auto base = allocate_code_near(process, runtime.near_address,
+                                       op.data.size());
+        if (!base) {
+            return std::unexpected(base.error());
+        }
+        SIZE_T written = 0;
+        if (!WriteProcessMemory(process.get(),
+                                reinterpret_cast<LPVOID>(*base), op.data.data(),
+                                op.data.size(), &written) ||
+            written != op.data.size()) {
+            (void)free_remote(process, *base);
+            return std::unexpected(Error::make(
+                ErrorCode::RemoteWriteFailed,
+                "stub write failed at " + std::to_string(*base),
+                GetLastError()));
+        }
+        // FlushInstructionCache: the page must be executable as soon as a
+        // bootstrap thread runs it (plan F10 correctness rule).
+        FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(*base),
+                              op.data.size());
+        record.allocated_base = *base;
+        stubs.push_back(AppliedStub{*base, op.data.size()});
+        break;
+    }
+
+    case PatchOperationKind::InvokeBootstrap: {
+        if (op.stub_index >= stubs.size()) {
+            return std::unexpected(Error::make(
+                ErrorCode::PatchFailed,
+                "InvokeBootstrap references stub " +
+                    std::to_string(op.stub_index) + " which is not installed"));
+        }
+        auto thread = win32::create_remote_thread(
+            process, stubs[op.stub_index].base);
+        if (!thread) {
+            return std::unexpected(thread.error());
+        }
+        const DWORD wait = WaitForSingleObject(thread->get(),
+                                               op.wait_timeout_ms);
+        if (wait != WAIT_OBJECT_0) {
+            return std::unexpected(Error::make(
+                ErrorCode::PatchFailed,
+                wait == WAIT_TIMEOUT
+                    ? "bootstrap stub did not finish in time"
+                    : "bootstrap stub wait failed"));
+        }
+        break;
+    }
     }
     return record;
 }
@@ -126,7 +183,7 @@ Result<AppliedPatch> apply_patch_plan(const win32::UniqueHandle& process,
     }
 
     for (const auto& op : plan.operations) {
-        auto record = apply_one(process, op, applied.runtime);
+        auto record = apply_one(process, op, applied.runtime, applied.stubs);
         if (!record) {
             // rollback_patch_plan also releases the RemoteState block.
             rollback_patch_plan(process, applied);
@@ -146,6 +203,12 @@ Result<void> rollback_patch_plan(const win32::UniqueHandle& process,
         }
     }
     applied.operations.clear();
+    for (auto it = applied.stubs.rbegin(); it != applied.stubs.rend(); ++it) {
+        if (auto freed = free_remote(process, it->base); !freed) {
+            return std::unexpected(freed.error());
+        }
+    }
+    applied.stubs.clear();
     if (applied.runtime.base != 0) {
         if (auto freed = free_remote(process, applied.runtime.base); !freed) {
             applied.runtime.base = 0;

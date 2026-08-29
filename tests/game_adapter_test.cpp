@@ -4,8 +4,10 @@
 
 #include "game/game_adapter.hpp"
 #include "game/genshin/genshin_adapter.hpp"
+#include "game/genshin/mobile_ui.hpp"
 #include "game/genshin/signatures.hpp"
 #include "game/starrail/starrail_adapter.hpp"
+#include "game/starrail/mobile_ui.hpp"
 #include "game/starrail/signatures.hpp"
 #include "scan/signature.hpp"
 #include "platform/win32/registry.hpp"
@@ -326,7 +328,8 @@ TEST_CASE("genshin plan redirects fps at RemoteState and honors dpi",
     Profile profile;
     profile.runtime.fps = 165;
     profile.runtime.power_save = PowerSavePolicy::Enabled;
-    profile.ui.mobile_ui = true;
+    // mobile_ui stays off here: since F5 the mobile-UI gate refuses
+    // unvalidated payloads, and that path has its own test below.
 
     game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
     auto plan = adapter.build_patch_plan(ctx);
@@ -340,8 +343,8 @@ TEST_CASE("genshin plan redirects fps at RemoteState and honors dpi",
 
     CHECK(plan->runtime.near_address == 0x7FF600000000);
     CHECK(plan->runtime.initial_fps == 165);
-    CHECK(plan->runtime.initial_flags ==
-          (kFlagMobileUi | kFlagPowerSave));
+    // mobile_ui is off (F5 gate) - only the power-save flag is requested.
+    CHECK(plan->runtime.initial_flags == kFlagPowerSave);
 }
 
 TEST_CASE("genshin plan fails without any fps signature", "[game][genshin][plan]") {
@@ -528,8 +531,9 @@ TEST_CASE("unsupported features stop validation with a reason",
             profile, adapter.capabilities(genshin_install, profile));
         REQUIRE_FALSE(valid.has_value());
         CHECK(valid.error().code == ErrorCode::NotSupported);
-        CHECK(valid.error().message ==
-              "Mobile UI is not implemented for Genshin in this build");
+        CHECK(valid.error().message.find(
+                  "Mobile UI is not implemented for Genshin") !=
+              std::string::npos);
     }
 
     SECTION("monitor selection has no verified mechanism") {
@@ -699,6 +703,82 @@ TEST_CASE("genshin persistent state snapshot reports absence honestly",
 // ---------------------------------------------------------------------------
 // F1 render launch pipeline
 // ---------------------------------------------------------------------------
+
+TEST_CASE("mobile UI gate refuses unvalidated payloads", "[game][mobileui]") {
+    hoyoflux::game::GenshinAdapter genshin;
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(
+        resolved("genshin.fps.3.7-5.3", {0x7FF612345678}));
+    signatures.push_back(resolved("genshin.mobileui.v1",
+                                  {0x1000, 0x2000, 0x3000, 0x4000}));
+    signatures.push_back(resolved("genshin.mobileui.input", {0x5000}));
+    signatures.push_back(resolved("genshin.unhooktime", {0x6000}));
+
+    Profile profile;
+    profile.ui.mobile_ui = true;
+    game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
+    auto plan = genshin.build_patch_plan(ctx);
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().code == ErrorCode::NotSupported);
+    CHECK(plan.error().message.find("not been validated") != std::string::npos);
+}
+
+TEST_CASE("mobile UI builders compose bootstrap ops from resolved signatures",
+          "[game][mobileui]") {
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(resolved("genshin.mobileui.v1",
+                                  {0x1000, 0x2000, 0x3000, 0x4000}));
+
+    Profile profile;
+    game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
+    PatchPlan plan;
+    REQUIRE(
+        hoyoflux::game::genshin::GenshinMobileUiPatchBuilder::add_operations(
+            plan, ctx)
+            .has_value());
+    REQUIRE(plan.operations.size() == 2);
+    CHECK(plan.operations[0].kind == PatchOperationKind::InstallCodeStub);
+    CHECK(plan.operations[0].data.size() > 16);
+    CHECK(plan.operations[1].kind == PatchOperationKind::InvokeBootstrap);
+    CHECK(plan.operations[1].stub_index == 0);
+
+    // Missing signatures are an explicit error, never a silent skip.
+    PatchPlan empty_plan;
+    game::PatchContext missing{std::vector<ResolvedSignature>{}, profile,
+                               0x7FF600000000, false};
+    auto failed =
+        hoyoflux::game::genshin::GenshinMobileUiPatchBuilder::add_operations(
+            empty_plan, missing);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == ErrorCode::SignatureNotFound);
+}
+
+TEST_CASE("mobile UI builders compose bootstrap ops from resolved signatures (starrail)",
+          "[game][mobileui]") {
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(resolved("starrail.uiset.v1", {0x1000}));
+    signatures.push_back(resolved("starrail.uiset.v3", {0x2000}));
+
+    Profile profile;
+    game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
+    PatchPlan plan;
+    REQUIRE(
+        hoyoflux::game::starrail::StarRailMobileUiPatchBuilder::add_operations(
+            plan, ctx)
+            .has_value());
+    REQUIRE(plan.operations.size() == 2);
+    CHECK(plan.operations[0].kind == PatchOperationKind::InstallCodeStub);
+
+    // Two resolved setters -> two call sequences in one stub.
+    const auto& stub = plan.operations[0].data;
+    size_t calls = 0;
+    for (size_t i = 0; i + 1 < stub.size(); ++i) {
+        if (stub[i] == std::byte{0xFF} && stub[i + 1] == std::byte{0xD0}) {
+            ++calls;
+        }
+    }
+    CHECK(calls == 2);
+}
 
 TEST_CASE("build_render_arguments maps only verified mechanisms",
           "[game][launch]") {

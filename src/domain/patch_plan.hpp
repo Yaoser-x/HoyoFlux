@@ -34,6 +34,16 @@ enum class PatchOperationKind {
     // legacy basefps hook (main.cpp:1512-1532), so neighbouring instruction
     // bytes are restored unchanged.
     RedirectRelative,
+
+    // F5: install position-independent code (data = machine code) on a fresh
+    // executable page near the plan's anchor. Nothing is overwritten and
+    // nothing executes until an InvokeBootstrap names the stub.
+    InstallCodeStub,
+
+    // F5: run a previously installed stub via a remote thread and wait for
+    // its exit (wait_timeout_ms). `stub_index` refers to the InstallCodeStub
+    // operations earlier in the same plan.
+    InvokeBootstrap,
 };
 
 // Where an operation's target lives. RemoteStateFps refers to the fps slot
@@ -47,9 +57,11 @@ enum class PatchTargetSymbol : unsigned char {
 struct PatchOperation {
     PatchOperationKind kind{PatchOperationKind::WriteBytes};
     uintptr_t address{0};
-    std::vector<std::byte> data;  // WriteBytes payload
+    std::vector<std::byte> data;  // WriteBytes / InstallCodeStub payload
     PatchTargetSymbol target_symbol{PatchTargetSymbol::Absolute};
     uintptr_t target_address{0};  // RedirectRelative when symbol == Absolute
+    uint32_t stub_index{0};       // InvokeBootstrap: index of installed stub
+    uint32_t wait_timeout_ms{5000};  // InvokeBootstrap
 
     [[nodiscard]] static PatchOperation write_bytes(uintptr_t address,
                                                     std::span<const std::byte> bytes) {
@@ -66,6 +78,21 @@ struct PatchOperation {
                                                           uintptr_t target) {
         return PatchOperation{PatchOperationKind::RedirectRelative, disp_field, {},
                               symbol, target};
+    }
+    [[nodiscard]] static PatchOperation install_code_stub(
+        std::vector<std::byte> code) {
+        PatchOperation op;
+        op.kind = PatchOperationKind::InstallCodeStub;
+        op.data = std::move(code);
+        return op;
+    }
+    [[nodiscard]] static PatchOperation invoke_bootstrap(uint32_t stub_index,
+                                                         uint32_t wait_timeout_ms) {
+        PatchOperation op;
+        op.kind = PatchOperationKind::InvokeBootstrap;
+        op.stub_index = stub_index;
+        op.wait_timeout_ms = wait_timeout_ms;
+        return op;
     }
 };
 

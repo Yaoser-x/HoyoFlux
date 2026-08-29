@@ -256,4 +256,19 @@ Result<void> resume_process_threads(DWORD pid) {
     return {};
 }
 
+Result<UniqueHandle> create_remote_thread(const UniqueHandle& process,
+                                          uintptr_t start_address) {
+    const LPTHREAD_START_ROUTINE routine =
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(start_address);
+    HANDLE raw = CreateRemoteThread(process.get(), nullptr, 0, routine, nullptr,
+                                    0, nullptr);
+    if (raw == nullptr) {
+        return std::unexpected(
+            win32_error(ErrorCode::ProcessSpawnFailed,
+                        "CreateRemoteThread failed for " +
+                            std::to_string(start_address)));
+    }
+    return UniqueHandle(raw);
+}
+
 }  // namespace hoyoflux::win32

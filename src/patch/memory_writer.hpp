@@ -31,6 +31,11 @@ Result<void> write_protected(const win32::UniqueHandle& process, uintptr_t addre
 Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
                                 uintptr_t near_address, size_t size);
 
+// F5: like allocate_near but with PAGE_EXECUTE_READWRITE, for bootstrap
+// stub code. Writes into the fresh page afterwards need no unprotect flow.
+Result<uintptr_t> allocate_code_near(const win32::UniqueHandle& process,
+                                     uintptr_t near_address, size_t size);
+
 // Release a block returned by allocate_near. Never call while the game may
 // still read the block.
 Result<void> free_remote(const win32::UniqueHandle& process, uintptr_t address);
