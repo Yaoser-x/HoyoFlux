@@ -41,3 +41,8 @@ add_executable(game_adapter_test game_adapter_test.cpp)
 target_link_libraries(game_adapter_test PRIVATE hoyoflux_domain hoyoflux_scan
                       hoyoflux_game Catch2::Catch2WithMain)
 add_test(NAME game_adapter_test COMMAND game_adapter_test)
+
+add_executable(patch_test patch_test.cpp)
+target_link_libraries(patch_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
+                      hoyoflux_patch Catch2::Catch2WithMain)
+add_test(NAME patch_test COMMAND patch_test)

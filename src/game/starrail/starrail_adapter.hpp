@@ -13,6 +13,7 @@ public:
         const GameInstall& install, const Profile& profile) const override;
     Result<std::vector<ResolvedSignature>> resolve_signatures(
         const std::vector<scan::ModuleSnapshot>& snapshots) const override;
+    Result<PatchPlan> build_patch_plan(const PatchContext& context) const override;
 };
 
 }  // namespace hoyoflux::game

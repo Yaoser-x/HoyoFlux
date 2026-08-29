@@ -11,6 +11,9 @@ using scan::ResolveStrategy;
 ResolveSpec rip_rel(int64_t off, int64_t skip) {
     return ResolveSpec{ResolveStrategy::RipRelative, off, skip};
 }
+ResolveSpec field_disp(int64_t off) {
+    return ResolveSpec{ResolveStrategy::FieldDisp, off, 0};
+}
 
 constexpr std::string_view kFps =
     "66 0F 6E 05 ?? ?? ?? ?? F2 0F 10 3D ?? ?? ?? ?? 0F 5B C0";
@@ -41,10 +44,11 @@ Result<scan::Signature> signature(SignatureId id) {
         return scan::make_signature("starrail.fps", kTextSection, kFps,
                                     {rip_rel(4, 4)});
     case SignatureId::FpsMovFlip:
-        // legacy: resolve like Fps (addr+3+disp+4); when the target equals the
-        // Fps holder, write 0x8B at found+1 (mov operand flip).
+        // resolver 0: the rip target (== the Fps holder when the flip
+        // applies); resolver 1: the patch site, match+1 - the 0x89 opcode
+        // byte that becomes 0x8B (main.cpp:2225-2231).
         return scan::make_signature("starrail.fpsmovflip", kTextSection,
-                                    kFpsMovFlip, {rip_rel(3, 4)});
+                                    kFpsMovFlip, {rip_rel(3, 4), field_disp(1)});
     case SignatureId::UISetV1:
         // legacy: tar=addr+15; rip = tar + *(i32)(tar) + 8  (skip over the
         // "C7 05 disp imm32" instruction's imm32)

@@ -5,7 +5,9 @@
 #include "scan/pattern_scanner.hpp"
 #include "scan/signature.hpp"
 
+#include <array>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <system_error>
 
@@ -13,6 +15,11 @@ namespace hoyoflux::game {
 namespace {
 
 constexpr uintmax_t kOldExeThresholdBytes = 0x800000;  // legacy: < 8 MB == old
+
+// Version priority order used by the legacy fps scan (main.cpp:2168-2197):
+// the first pattern that matches decides the fps address semantics.
+constexpr std::string_view kFpsIdsByPriority[] = {
+    "genshin.fps.5.5", "genshin.fps.5.4", "genshin.fps.3.7-5.3", "genshin.fps.old"};
 
 }  // namespace
 
@@ -75,32 +82,83 @@ Result<ModuleRequirements> GenshinAdapter::module_requirements(
 
 Result<std::vector<ResolvedSignature>> GenshinAdapter::resolve_signatures(
     const std::vector<scan::ModuleSnapshot>& snapshots) const {
-    std::vector<ResolvedSignature> out;
+    std::vector<scan::Signature> signatures;
+    signatures.reserve(genshin::all_ids().size());
     for (const auto id : genshin::all_ids()) {
         auto sig = genshin::signature(id);
         if (!sig) {
             return std::unexpected(sig.error());
         }
-        ResolvedSignature resolved{sig->id, 0, false};
-        for (const auto& snapshot : snapshots) {
-            const auto* section = snapshot.find_section(sig->section);
-            if (section == nullptr) {
-                continue;
-            }
-            auto match = scan::scan_first(sig->pattern, section->bytes);
-            if (!match) {
-                continue;
-            }
-            auto address = scan::resolve_match(*sig, *section, *match, 0);
-            if (address) {
-                resolved.address = *address;
-                resolved.resolved = true;
-                break;
-            }
-        }
-        out.push_back(resolved);
+        signatures.push_back(std::move(*sig));
     }
-    return out;
+    return resolve_all_signatures(signatures, snapshots);
+}
+
+Result<PatchPlan> GenshinAdapter::build_patch_plan(const PatchContext& context) const {
+    PatchPlan plan;
+    plan.runtime.near_address = context.primary_module_base;
+    plan.runtime.initial_fps = context.profile.runtime.fps;
+    plan.runtime.initial_flags =
+        (context.profile.ui.mobile_ui ? kFlagMobileUi : 0) |
+        (context.profile.runtime.power_save == PowerSavePolicy::Enabled ? kFlagPowerSave
+                                                                        : 0);
+
+    // FPS: the first resolved signature in legacy priority order yields the
+    // address of a rip-relative displacement field inside the game's
+    // fps-read instruction. Redirecting it at the RemoteState fps slot is
+    // the 1.0.0 replacement for the legacy Private_buffer + sync-thread
+    // mechanism (main.cpp:1512-1532): the game then reads its fps from a
+    // block only we write - no resident launcher, no remote thread.
+    const ResolvedSignature* fps = nullptr;
+    for (const auto id : kFpsIdsByPriority) {
+        fps = find_resolved(context.resolved, id);
+        if (fps != nullptr) {
+            break;
+        }
+    }
+    if (fps == nullptr) {
+        return std::unexpected(Error::make(
+            ErrorCode::SignatureNotFound,
+            "no Genshin fps signature resolved; game version likely unsupported "
+            "(run `hoyoflux doctor`)"));
+    }
+    plan.operations.push_back(PatchOperation::redirect_relative(
+        fps->fields[0], PatchTargetSymbol::RemoteStateFps, 0));
+
+    // Custom DPI: replace the GetDPI prologue with
+    //   mov eax, dpi*96 ; movd xmm0, eax ; ret  (main.cpp:1551-1557)
+    if (context.profile.ui.dpi_scale.has_value()) {
+        const ResolvedSignature* dpi = find_resolved(context.resolved, "genshin.dpi");
+        if (dpi == nullptr) {
+            return std::unexpected(Error::make(
+                ErrorCode::SignatureNotFound,
+                "custom dpi requested but the genshin.dpi signature did not "
+                "resolve (run `hoyoflux doctor`)"));
+        }
+        const float dpi_pixels = *context.profile.ui.dpi_scale * 96.0f;
+        std::array<std::byte, 16> prologue{};
+        prologue[0] = std::byte{0xB8};  // mov eax, imm32
+        std::memcpy(prologue.data() + 1, &dpi_pixels, sizeof(dpi_pixels));
+        prologue[5] = std::byte{0x66};   // movd xmm0, eax
+        prologue[6] = std::byte{0x0F};
+        prologue[7] = std::byte{0x6E};
+        prologue[8] = std::byte{0xC0};
+        prologue[9] = std::byte{0xC3};  // ret
+        for (size_t i = 10; i < prologue.size(); ++i) {
+            prologue[i] = std::byte{0xCC};
+        }
+        plan.operations.push_back(
+            PatchOperation::write_bytes(dpi->fields[0], prologue));
+    }
+
+    // Deliberately deferred (in-process only, see the 1.0.0 plan §A6
+    // "注入方式目标"): the verify detour, the UI-unhook detour, the
+    // il2cpp MobileUI calls and the in-game fps-set hook all execute code
+    // inside the game and need a bootstrap thread the external-only model
+    // does not provide. They stay unapplied until real-game validation
+    // (plan verification point 1) proves one is required, in which case a
+    // minimal targeted stub gets added with a recorded reason.
+    return plan;
 }
 
 }  // namespace hoyoflux::game

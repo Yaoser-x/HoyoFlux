@@ -5,6 +5,9 @@
 #include "scan/pattern_scanner.hpp"
 #include "scan/signature.hpp"
 
+#include <array>
+#include <cstdint>
+
 namespace hoyoflux::game {
 
 GameId StarRailAdapter::id() const { return GameId::StarRail; }
@@ -50,32 +53,48 @@ Result<ModuleRequirements> StarRailAdapter::module_requirements(
 
 Result<std::vector<ResolvedSignature>> StarRailAdapter::resolve_signatures(
     const std::vector<scan::ModuleSnapshot>& snapshots) const {
-    std::vector<ResolvedSignature> out;
+    std::vector<scan::Signature> signatures;
+    signatures.reserve(starrail::all_ids().size());
     for (const auto id : starrail::all_ids()) {
         auto sig = starrail::signature(id);
         if (!sig) {
             return std::unexpected(sig.error());
         }
-        ResolvedSignature resolved{sig->id, 0, false};
-        for (const auto& snapshot : snapshots) {
-            const auto* section = snapshot.find_section(sig->section);
-            if (section == nullptr) {
-                continue;
-            }
-            auto match = scan::scan_first(sig->pattern, section->bytes);
-            if (!match) {
-                continue;
-            }
-            auto address = scan::resolve_match(*sig, *section, *match, 0);
-            if (address) {
-                resolved.address = *address;
-                resolved.resolved = true;
-                break;
-            }
-        }
-        out.push_back(resolved);
+        signatures.push_back(std::move(*sig));
     }
-    return out;
+    return resolve_all_signatures(signatures, snapshots);
+}
+
+Result<PatchPlan> StarRailAdapter::build_patch_plan(const PatchContext& context) const {
+    PatchPlan plan;
+
+    // FPS: write the profile value straight into the game's fps variable.
+    const ResolvedSignature* fps = find_resolved(context.resolved, "starrail.fps");
+    if (fps == nullptr) {
+        return std::unexpected(Error::make(
+            ErrorCode::SignatureNotFound,
+            "the starrail.fps signature did not resolve; game version likely "
+            "unsupported (run `hoyoflux doctor`)"));
+    }
+    plan.operations.push_back(
+        PatchOperation::write_u32(fps->fields[0], context.profile.runtime.fps));
+
+    // Mov flip: when the game's fps-write instruction targets the same
+    // variable, flip `mov [var], ecx` into `mov ecx, [var]`
+    // (main.cpp:2225-2231) so the game can never lower our value again.
+    if (const ResolvedSignature* flip =
+            find_resolved(context.resolved, "starrail.fpsmovflip")) {
+        if (flip->fields[0] == fps->fields[0]) {
+            const std::array<std::byte, 1> flip_opcode{std::byte{0x8B}};
+            plan.operations.push_back(
+                PatchOperation::write_bytes(flip->fields[1], flip_opcode));
+        }
+    }
+
+    // No RemoteState allocation: nothing here references it. A future
+    // resident component (dynamic FPS) re-writes the game variable via the
+    // same address; the mov flip keeps our value authoritative.
+    return plan;
 }
 
 }  // namespace hoyoflux::game

@@ -1,5 +1,6 @@
 // GameAdapter tests. Signature wiring is proven against synthetic snapshots
-// (no game required); version detection uses temp files.
+// (no game required); version detection uses temp files; plan building uses
+// directly-constructed resolved signatures.
 
 #include "game/game_adapter.hpp"
 #include "game/genshin/genshin_adapter.hpp"
@@ -25,6 +26,10 @@ namespace scan = hoyoflux::scan;
 
 namespace {
 
+using hoyoflux::game::ResolvedSignature;
+using hoyoflux::PatchOperationKind;
+using hoyoflux::PatchTargetSymbol;
+
 using SigFactory = std::function<scan::Signature(std::string_view id)>;
 
 // Return a signature by its string id (empty signature when unknown).
@@ -49,8 +54,10 @@ scan::Signature starrail_sig_by_id(std::string_view id) {
 }
 
 // Build a ModuleSnapshot whose `section` copy contains every signature in
-// `ids`, each placed at its own offset so all of them match. The first
-// resolver's disp field is filled with a fixed value.
+// `ids`, each placed at its own offset so all of them match. Resolver read
+// fields (rip-relative displacements, raw int32 loads) get 0x40 written into
+// every wildcard byte they touch, so every resolver of every signature
+// resolves to a non-zero address.
 scan::ModuleSnapshot build_snapshot(std::string_view section,
                                     const std::vector<std::string_view>& ids,
                                     const SigFactory& make_sig) {
@@ -62,6 +69,27 @@ scan::ModuleSnapshot build_snapshot(std::string_view section,
     copy.remote_address = snap.module_base + copy.rva;
     copy.bytes.assign(0x1000, std::byte{0xCC});
 
+    const auto write_resolver_data = [&](const scan::Signature& sig, size_t cursor) {
+        for (const auto& resolver : sig.resolvers) {
+            if (resolver.strategy != scan::ResolveStrategy::RipRelative &&
+                resolver.strategy != scan::ResolveStrategy::RawInt32At) {
+                continue;  // FieldDisp / Direct read nothing
+            }
+            for (size_t i = 0; i < 4; ++i) {
+                const size_t pos = cursor + static_cast<size_t>(resolver.disp_offset) + i;
+                if (pos >= copy.bytes.size()) {
+                    continue;
+                }
+                // Beyond the pattern, or inside it only at wildcards - the
+                // fixed pattern bytes must stay untouched for the match.
+                const bool in_pattern = pos < cursor + sig.pattern.length();
+                if (!in_pattern || !sig.pattern.mask[pos - cursor]) {
+                    copy.bytes[pos] = std::byte{0x40};
+                }
+            }
+        }
+    };
+
     size_t cursor = 0x40;
     for (const auto id : ids) {
         auto sig = make_sig(id);
@@ -69,46 +97,19 @@ scan::ModuleSnapshot build_snapshot(std::string_view section,
             continue;
         }
         const size_t pattern_len = sig.pattern.length();
-        if (cursor + pattern_len > copy.bytes.size()) {
-            copy.bytes.resize(cursor + pattern_len + 16, std::byte{0xCC});
+        if (cursor + pattern_len + 0x40 > copy.bytes.size()) {
+            copy.bytes.resize(cursor + pattern_len + 0x80, std::byte{0xCC});
         }
         for (size_t i = 0; i < pattern_len; ++i) {
             if (sig.pattern.mask[i]) {
                 copy.bytes[cursor + i] = sig.pattern.bytes[i];
             }
         }
-        const auto& resolver = sig.resolvers.front();
-        if (resolver.strategy != scan::ResolveStrategy::Direct) {
-            const int32_t disp = 0x40;
-            std::memcpy(copy.bytes.data() + cursor + resolver.disp_offset, &disp,
-                        sizeof(disp));
-        }
-        cursor += pattern_len + 8;
+        write_resolver_data(sig, cursor);
+        cursor += pattern_len + 0x40;  // room for resolvers reading past the end
     }
     snap.sections.push_back(std::move(copy));
     return snap;
-}
-
-std::vector<std::string_view> genshin_ids_in(std::string_view section) {
-    std::vector<std::string_view> ids;
-    for (const auto id : genshin::all_ids()) {
-        auto sig = genshin::signature(id);
-        if (sig && sig->section == section) {
-            ids.push_back(sig->id);
-        }
-    }
-    return ids;
-}
-
-std::vector<std::string_view> starrail_ids_in(std::string_view section) {
-    std::vector<std::string_view> ids;
-    for (const auto id : starrail::all_ids()) {
-        auto sig = starrail::signature(id);
-        if (sig && sig->section == section) {
-            ids.push_back(sig->id);
-        }
-    }
-    return ids;
 }
 
 // A temp file of the given byte size; removed at scope end.
@@ -148,7 +149,13 @@ TEST_CASE("adapter factory returns correct ids", "[game][adapter]") {
 
 TEST_CASE("genshin adapter resolves every .text signature", "[game][genshin]") {
     auto adapter = hoyoflux::game::GenshinAdapter{};
-    const auto ids = genshin_ids_in(".text");
+    std::vector<std::string_view> ids;
+    for (const auto id : genshin::all_ids()) {
+        auto sig = genshin::signature(id);
+        if (sig && sig->section == ".text") {
+            ids.push_back(sig->id);
+        }
+    }
     REQUIRE_FALSE(ids.empty());
 
     const auto snap = build_snapshot(".text", ids, genshin_sig_by_id);
@@ -158,14 +165,21 @@ TEST_CASE("genshin adapter resolves every .text signature", "[game][genshin]") {
         if (std::find(ids.begin(), ids.end(), rs.id) != ids.end()) {
             INFO("expected resolved: " << rs.id);
             CHECK(rs.resolved);
-            CHECK(rs.address != 0);
+            REQUIRE(rs.fields.size() == 1);
+            CHECK(rs.fields[0] != 0);
         }
     }
 }
 
 TEST_CASE("genshin adapter resolves every il2cpp signature", "[game][genshin]") {
     auto adapter = hoyoflux::game::GenshinAdapter{};
-    const auto ids = genshin_ids_in("il2cpp");
+    std::vector<std::string_view> ids;
+    for (const auto id : genshin::all_ids()) {
+        auto sig = genshin::signature(id);
+        if (sig && sig->section == "il2cpp") {
+            ids.push_back(sig->id);
+        }
+    }
     REQUIRE_FALSE(ids.empty());
     const auto snap = build_snapshot("il2cpp", ids, genshin_sig_by_id);
     auto resolved = adapter.resolve_signatures({snap});
@@ -174,6 +188,10 @@ TEST_CASE("genshin adapter resolves every il2cpp signature", "[game][genshin]") 
         if (std::find(ids.begin(), ids.end(), rs.id) != ids.end()) {
             INFO("expected resolved: " << rs.id);
             CHECK(rs.resolved);
+            // MobileUi signatures carry 4 resolvers; check they all resolved.
+            for (const auto field : rs.fields) {
+                CHECK(field != 0);
+            }
         }
     }
 }
@@ -189,8 +207,18 @@ TEST_CASE("genshin adapter leaves missing signatures unresolved", "[game][genshi
 
 TEST_CASE("starrail adapter resolves fps and uiset", "[game][starrail]") {
     auto adapter = hoyoflux::game::StarRailAdapter{};
-    const auto text_ids = starrail_ids_in(".text");
-    const auto il2cpp_ids = starrail_ids_in("il2cpp");
+    auto ids_in = [](std::string_view section) {
+        std::vector<std::string_view> out;
+        for (const auto id : starrail::all_ids()) {
+            auto sig = starrail::signature(id);
+            if (sig && sig->section == section) {
+                out.push_back(sig->id);
+            }
+        }
+        return out;
+    };
+    const auto text_ids = ids_in(".text");
+    const auto il2cpp_ids = ids_in("il2cpp");
     REQUIRE_FALSE(text_ids.empty());
     REQUIRE_FALSE(il2cpp_ids.empty());
 
@@ -264,4 +292,175 @@ TEST_CASE("locate_installation either succeeds or reports not found",
     } else {
         CHECK(install.error().code == ErrorCode::ProcessNotFound);
     }
+}
+
+// ---------------------------------------------------------------------------
+// build_patch_plan
+// ---------------------------------------------------------------------------
+
+namespace {
+
+ResolvedSignature resolved(std::string_view id, std::vector<uintptr_t> fields) {
+    return ResolvedSignature{id, true, std::move(fields)};
+}
+
+ResolvedSignature unresolved(std::string_view id) {
+    return ResolvedSignature{id, false, {}};
+}
+
+}  // namespace
+
+TEST_CASE("genshin plan redirects fps at RemoteState and honors dpi",
+          "[game][genshin][plan]") {
+    auto adapter = hoyoflux::game::GenshinAdapter{};
+
+    std::vector<ResolvedSignature> signatures;
+    // Only the 3.7-5.3-generation signature resolved - the priority order
+    // must pick it even though 5.5 is higher priority but unresolved.
+    signatures.push_back(unresolved("genshin.fps.5.5"));
+    signatures.push_back(resolved("genshin.fps.3.7-5.3", {0x7FF612345678}));
+
+    Profile profile;
+    profile.runtime.fps = 165;
+    profile.runtime.power_save = PowerSavePolicy::Enabled;
+    profile.ui.mobile_ui = true;
+
+    game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
+    auto plan = adapter.build_patch_plan(ctx);
+    REQUIRE(plan.has_value());
+    REQUIRE(plan->operations.size() == 1);
+
+    const auto& redirect = plan->operations[0];
+    CHECK(redirect.kind == PatchOperationKind::RedirectRelative);
+    CHECK(redirect.address == 0x7FF612345678);
+    CHECK(redirect.target_symbol == PatchTargetSymbol::RemoteStateFps);
+
+    CHECK(plan->runtime.near_address == 0x7FF600000000);
+    CHECK(plan->runtime.initial_fps == 165);
+    CHECK(plan->runtime.initial_flags ==
+          (kFlagMobileUi | kFlagPowerSave));
+}
+
+TEST_CASE("genshin plan fails without any fps signature", "[game][genshin][plan]") {
+    auto adapter = hoyoflux::game::GenshinAdapter{};
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(resolved("genshin.unitywndclass", {0x1000}));
+
+    Profile profile;
+    game::PatchContext ctx{signatures, profile, 0x1000, false};
+    auto plan = adapter.build_patch_plan(ctx);
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().code == ErrorCode::SignatureNotFound);
+}
+
+TEST_CASE("genshin plan emits the dpi prologue when the profile asks for it",
+          "[game][genshin][plan]") {
+    auto adapter = hoyoflux::game::GenshinAdapter{};
+
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(resolved("genshin.fps.5.5", {0x7FF610000010}));
+    signatures.push_back(resolved("genshin.dpi", {0x7FF61000A000}));
+
+    Profile profile;
+    profile.runtime.fps = 60;
+    profile.ui.dpi_scale = 1.5f;
+
+    game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
+    auto plan = adapter.build_patch_plan(ctx);
+    REQUIRE(plan.has_value());
+    REQUIRE(plan->operations.size() == 2);
+
+    const auto& dpi = plan->operations[1];
+    CHECK(dpi.kind == PatchOperationKind::WriteBytes);
+    CHECK(dpi.address == 0x7FF61000A000);
+    REQUIRE(dpi.data.size() == 16);
+    CHECK(dpi.data[0] == std::byte{0xB8});  // mov eax, imm32
+    float written = 0.0f;
+    std::memcpy(&written, dpi.data.data() + 1, sizeof(written));
+    CHECK(written == 1.5f * 96.0f);
+    CHECK(dpi.data[5] == std::byte{0x66});   // movd xmm0, eax
+    CHECK(dpi.data[9] == std::byte{0xC3});   // ret
+    CHECK(dpi.data[10] == std::byte{0xCC});  // int3 padding
+
+    // No dpi_scale -> no dpi operation.
+    profile.ui.dpi_scale.reset();
+    auto without = adapter.build_patch_plan(
+        game::PatchContext{signatures, profile, 0x7FF600000000, false});
+    REQUIRE(without.has_value());
+    CHECK(without->operations.size() == 1);
+}
+
+TEST_CASE("genshin plan fails when dpi requested but signature missing",
+          "[game][genshin][plan]") {
+    auto adapter = hoyoflux::game::GenshinAdapter{};
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(resolved("genshin.fps.5.5", {0x7FF610000010}));
+
+    Profile profile;
+    profile.ui.dpi_scale = 1.25f;
+    game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
+    auto plan = adapter.build_patch_plan(ctx);
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().code == ErrorCode::SignatureNotFound);
+}
+
+TEST_CASE("starrail plan writes fps and flips the mov when targets agree",
+          "[game][starrail][plan]") {
+    auto adapter = hoyoflux::game::StarRailAdapter{};
+
+    Profile profile;
+    profile.runtime.fps = 144;
+    const uintptr_t fps_var = 0x7FF630001000;
+
+    SECTION("flip applies when the write site targets the fps variable") {
+        std::vector<ResolvedSignature> signatures;
+        signatures.push_back(resolved("starrail.fps", {fps_var}));
+        // resolver 0: rip target == fps variable; resolver 1: patch site.
+        signatures.push_back(resolved("starrail.fpsmovflip", {fps_var, 0x7FF610000041}));
+
+        auto plan = adapter.build_patch_plan(
+            game::PatchContext{signatures, profile, 0x7FF600000000, false});
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->operations.size() == 2);
+
+        const auto& write = plan->operations[0];
+        CHECK(write.kind == PatchOperationKind::WriteBytes);
+        CHECK(write.address == fps_var);
+        REQUIRE(write.data.size() == 4);
+        uint32_t value = 0;
+        std::memcpy(&value, write.data.data(), sizeof(value));
+        CHECK(value == 144);
+
+        const auto& flip = plan->operations[1];
+        CHECK(flip.kind == PatchOperationKind::WriteBytes);
+        CHECK(flip.address == 0x7FF610000041);
+        REQUIRE(flip.data.size() == 1);
+        CHECK(flip.data[0] == std::byte{0x8B});  // 89 -> 8B
+
+        CHECK(plan->runtime.base == 0);  // no RemoteState requested
+    }
+
+    SECTION("flip skipped when the write site targets something else") {
+        std::vector<ResolvedSignature> signatures;
+        signatures.push_back(resolved("starrail.fps", {fps_var}));
+        signatures.push_back(
+            resolved("starrail.fpsmovflip", {fps_var + 0x40, 0x7FF610000041}));
+
+        auto plan = adapter.build_patch_plan(
+            game::PatchContext{signatures, profile, 0x7FF600000000, false});
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->operations.size() == 1);  // fps write only
+    }
+}
+
+TEST_CASE("starrail plan fails without the fps signature", "[game][starrail][plan]") {
+    auto adapter = hoyoflux::game::StarRailAdapter{};
+    std::vector<ResolvedSignature> signatures;
+    signatures.push_back(resolved("starrail.uiset.v1", {0x1000, 0x2000}));
+
+    Profile profile;
+    auto plan = adapter.build_patch_plan(
+        game::PatchContext{signatures, profile, 0x1000, false});
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().code == ErrorCode::SignatureNotFound);
 }
