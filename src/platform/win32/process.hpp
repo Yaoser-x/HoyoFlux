@@ -57,6 +57,12 @@ Result<UniqueHandle> open_process(DWORD pid, DWORD access);
 bool is_process_running(DWORD pid);
 
 // Terminate and wait up to `timeout_ms` for it to exit.
-Result<void> terminate_and_wait(UniqueHandle process, uint32_t timeout_ms);
+Result<void> terminate_and_wait(const UniqueHandle& process, uint32_t timeout_ms);
+
+// Suspend / resume every thread of the process (Toolhelp thread snapshot +
+// SuspendThread / ResumeThread). Balanced pairs only: resuming decrements
+// each thread's suspend count once.
+Result<void> suspend_process_threads(DWORD pid);
+Result<void> resume_process_threads(DWORD pid);
 
 }  // namespace hoyoflux::win32

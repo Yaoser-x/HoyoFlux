@@ -46,3 +46,9 @@ add_executable(patch_test patch_test.cpp)
 target_link_libraries(patch_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
                       hoyoflux_patch Catch2::Catch2WithMain)
 add_test(NAME patch_test COMMAND patch_test)
+
+add_executable(session_test session_test.cpp)
+target_link_libraries(session_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
+                      hoyoflux_scan hoyoflux_patch hoyoflux_game hoyoflux_session
+                      Catch2::Catch2WithMain)
+add_test(NAME session_test COMMAND session_test)

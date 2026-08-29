@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 
 #include <cstddef>
+#include <cwchar>
 #include <string>
 #include <utility>
 
@@ -54,6 +55,40 @@ Result<uintptr_t> remote_module_base(const win32::UniqueHandle& process) {
             win32_error(ErrorCode::ModuleNotFound, "Module32FirstW failed"));
     }
     return reinterpret_cast<uintptr_t>(entry.modBaseAddr);
+}
+
+Result<uintptr_t> remote_module_base(const win32::UniqueHandle& process,
+                                     std::string_view module_name) {
+    const DWORD pid = GetProcessId(process.get());
+    if (pid == 0) {
+        return std::unexpected(win32_error(ErrorCode::OsError, "GetProcessId failed"));
+    }
+
+    win32::UniqueHandle snapshot(
+        CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+    if (!snapshot) {
+        return std::unexpected(
+            win32_error(ErrorCode::OsError, "CreateToolhelp32Snapshot failed"));
+    }
+
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Module32FirstW(snapshot.get(), &entry)) {
+        return std::unexpected(
+            win32_error(ErrorCode::ModuleNotFound, "Module32FirstW failed"));
+    }
+    do {
+        // Case-insensitive compare against the module file name, e.g.
+        // "UserAssembly.dll" (module name matching follows the loader).
+        // ModuleRequirement names are ASCII; widen for the Win32 compare.
+        const std::wstring wide_name(module_name.begin(), module_name.end());
+        if (_wcsicmp(entry.szModule, wide_name.c_str()) == 0) {
+            return reinterpret_cast<uintptr_t>(entry.modBaseAddr);
+        }
+    } while (Module32NextW(snapshot.get(), &entry));
+    return std::unexpected(Error::make(ErrorCode::ModuleNotFound,
+                                       "module not loaded: " +
+                                           std::string(module_name)));
 }
 
 Result<ModuleSnapshot> snapshot_module(const win32::UniqueHandle& process,

@@ -45,6 +45,12 @@ struct ModuleSnapshot {
 // Base address of a process's main module, via Toolhelp module snapshot.
 Result<uintptr_t> remote_module_base(const win32::UniqueHandle& process);
 
+// Base address of the loaded module with the given file name (e.g.
+// "UnityPlayer.dll", ASCII, matched case-insensitively). Fails with
+// ModuleNotFound when the module is not loaded yet.
+Result<uintptr_t> remote_module_base(const win32::UniqueHandle& process,
+                                     std::string_view module_name);
+
 // Snapshot the module at `module_base`: parse headers and read each requested
 // section into a local copy. Sections whose names are absent from the image
 // are silently skipped (the caller checks find_section). Guards against

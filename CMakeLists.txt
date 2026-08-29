@@ -33,6 +33,7 @@ add_subdirectory(src/platform/win32)
 add_subdirectory(src/scan)
 add_subdirectory(src/patch)
 add_subdirectory(src/game)
+add_subdirectory(src/session)
 
 if(HOYOFLUX_BUILD_TESTS)
   enable_testing()

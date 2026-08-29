@@ -166,7 +166,7 @@ bool is_process_running(DWORD pid) {
     return exit_code == STILL_ACTIVE;
 }
 
-Result<void> terminate_and_wait(UniqueHandle process, uint32_t timeout_ms) {
+Result<void> terminate_and_wait(const UniqueHandle& process, uint32_t timeout_ms) {
     if (!process) {
         return std::unexpected(
             Error::make(ErrorCode::InvalidArgument, "terminate_and_wait: no process"));
@@ -176,6 +176,64 @@ Result<void> terminate_and_wait(UniqueHandle process, uint32_t timeout_ms) {
             win32_error(ErrorCode::OsError, "TerminateProcess failed"));
     }
     WaitForSingleObject(process.get(), timeout_ms);
+    return {};
+}
+
+namespace {
+
+// Walk every thread of `pid` and apply `fn` (SuspendThread / ResumeThread),
+// counting successful calls. A thread that exits while we walk is skipped.
+Result<int> walk_threads(DWORD pid, DWORD(WINAPI* fn)(HANDLE)) {
+    win32::UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!snapshot) {
+        return std::unexpected(
+            win32_error(ErrorCode::OsError, "CreateToolhelp32Snapshot(threads) failed"));
+    }
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Thread32First(snapshot.get(), &entry)) {
+        return std::unexpected(win32_error(ErrorCode::OsError, "Thread32First failed"));
+    }
+    int affected = 0;
+    do {
+        if (entry.th32OwnerProcessID != pid) {
+            continue;
+        }
+        UniqueHandle thread(OpenThread(THREAD_SUSPEND_RESUME, FALSE,
+                                       entry.th32ThreadID));
+        if (!thread) {
+            continue;  // exited between snapshot and open
+        }
+        if (fn(thread.get()) != static_cast<DWORD>(-1)) {
+            ++affected;
+        }
+    } while (Thread32Next(snapshot.get(), &entry));
+    return affected;
+}
+
+}  // namespace
+
+Result<void> suspend_process_threads(DWORD pid) {
+    auto suspended = walk_threads(pid, SuspendThread);
+    if (!suspended) {
+        return std::unexpected(suspended.error());
+    }
+    if (*suspended == 0) {
+        return std::unexpected(Error::make(ErrorCode::OsError,
+                                           "no threads suspended (process gone?)"));
+    }
+    return {};
+}
+
+Result<void> resume_process_threads(DWORD pid) {
+    auto resumed = walk_threads(pid, ResumeThread);
+    if (!resumed) {
+        return std::unexpected(resumed.error());
+    }
+    if (*resumed == 0) {
+        return std::unexpected(Error::make(ErrorCode::OsError,
+                                           "no threads resumed (process gone?)"));
+    }
     return {};
 }
 
