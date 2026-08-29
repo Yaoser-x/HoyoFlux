@@ -30,7 +30,17 @@
 //   dpi_scale = 1.0             # absent = leave game default
 //
 // Every profile also takes `game = "genshin" | "starrail"` (required) and
-// `match = "manual" | "auto"` (optional, default manual).
+// `match = "manual" | "auto"` (optional, default manual). The structured
+// form declares what a profile is for (F8):
+//
+//   [profiles.ipad.match]
+//   auto_select = true
+//   portrait = true              # or device_name / resolution / aspect_ratio
+//   priority = 0                 # tie-break among equally specific matches
+//
+// Auto selection order: exact device identity > exact resolution > aspect
+// ratio > orientation. Profiles without auto_select = true are never picked
+// automatically; the default_profile is the final fallback.
 
 #include "domain/error.hpp"
 #include "domain/game.hpp"

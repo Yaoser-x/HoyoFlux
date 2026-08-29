@@ -180,7 +180,7 @@ int cmd_profile_show(const std::string& id) {
     const auto& p = *profile;
     std::cout << "profile:    " << p.id << "\n";
     std::cout << "game:       " << to_string(p.game) << "\n";
-    std::cout << "match:      " << (p.match == MatchPolicy::Auto ? "auto" : "manual")
+    std::cout << "match:      " << (p.match.auto_select ? "auto" : "manual")
               << "\n";
     if (p.render.resolution) {
         std::cout << "resolution: " << p.render.resolution->width << "x"

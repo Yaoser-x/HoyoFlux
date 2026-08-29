@@ -84,15 +84,49 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
             ErrorCode::ProfileInvalid, context + ": missing required key 'game'"));
     }
 
+    // match = "manual" | "auto" is the legacy string form and still
+    // accepted; the structured [profiles.X.match] table is preferred (F8).
     if (const auto match = opt_string(body, "match")) {
         if (*match == "manual") {
-            profile.match = MatchPolicy::Manual;
+            profile.match.auto_select = false;
         } else if (*match == "auto") {
-            profile.match = MatchPolicy::Auto;
+            profile.match.auto_select = true;
         } else {
             return std::unexpected(Error::make(
                 ErrorCode::ProfileInvalid,
                 context + ": match must be \"manual\" or \"auto\""));
+        }
+    }
+    if (const auto* match_node = body.get("match");
+        match_node && match_node->is_table()) {
+        const auto& table = *match_node->as_table();
+        if (const auto auto_select = opt_bool(table, "auto_select")) {
+            profile.match.auto_select = *auto_select;
+        }
+        if (const auto device = opt_string(table, "device_name")) {
+            profile.match.device_name =
+                std::wstring(device->begin(), device->end());
+        }
+        if (const auto resolution = opt_string(table, "resolution")) {
+            auto parsed = parse_resolution(*resolution, context + " match");
+            if (!parsed) {
+                return std::unexpected(parsed.error());
+            }
+            profile.match.resolution = *parsed;
+        }
+        if (const auto aspect = opt_double(table, "aspect_ratio")) {
+            if (*aspect <= 0.0 || *aspect > 10.0) {
+                return std::unexpected(Error::make(
+                    ErrorCode::ProfileInvalid,
+                    context + ": match.aspect_ratio must be within (0, 10]"));
+            }
+            profile.match.aspect_ratio = static_cast<float>(*aspect);
+        }
+        if (const auto portrait = opt_bool(table, "portrait")) {
+            profile.match.portrait = *portrait;
+        }
+        if (const auto priority = opt_int(table, "priority")) {
+            profile.match.priority = static_cast<int>(*priority);
         }
     }
 
@@ -221,7 +255,10 @@ mobile_ui = false
 
 [profiles.ipad]
 game = "genshin"
-match = "auto"
+
+[profiles.ipad.match]
+auto_select = true
+portrait = true
 
 [profiles.ipad.render]
 resolution = "1080x1920"
@@ -316,37 +353,133 @@ Result<Profile> find_profile(const Config& config, std::string_view id) {
                                        "profile not found: " + std::string(id)));
 }
 
+namespace {
+
+// One display with its current mode, for matcher scoring.
+struct DisplayFacts {
+    win32::DisplayInfo info;
+    Resolution current{0, 0};
+};
+
+[[nodiscard]] float display_aspect(const DisplayFacts& display) {
+    if (display.current.height == 0) {
+        return 0.0f;
+    }
+    return static_cast<float>(display.current.width) /
+           static_cast<float>(display.current.height);
+}
+
+[[nodiscard]] bool aspect_close(float a, float b) {
+    constexpr float kEpsilon = 0.01f;
+    return a > 0.0f && b > 0.0f &&
+           (a - b < kEpsilon && b - a < kEpsilon);
+}
+
+// Specificity tiers: identity beats geometry (plan section 17.2). A profile
+// scores a tier only when every predicate it declares matches the display.
+[[nodiscard]] int match_score(const Profile& profile,
+                              const DisplayFacts& display) {
+    const auto& match = profile.match;
+    int score = 0;
+    bool matched_any_predicate = false;
+
+    if (match.device_name.has_value()) {
+        if (*match.device_name != display.info.device_name) {
+            return -1;
+        }
+        score += 1000;
+        matched_any_predicate = true;
+    }
+    if (match.resolution.has_value()) {
+        if (*match.resolution != display.current) {
+            return -1;
+        }
+        score += 100;
+        matched_any_predicate = true;
+    }
+    if (match.aspect_ratio.has_value()) {
+        if (!aspect_close(*match.aspect_ratio, display_aspect(display))) {
+            return -1;
+        }
+        score += 10;
+        matched_any_predicate = true;
+    }
+    if (match.portrait.has_value()) {
+        const bool display_is_portrait =
+            display.info.is_attached &&
+            display.info.bottom - display.info.top >
+                display.info.right - display.info.left;
+        if (*match.portrait != display_is_portrait) {
+            return -1;
+        }
+        score += 1;
+        matched_any_predicate = true;
+    }
+    return matched_any_predicate ? score : -1;
+}
+
+}  // namespace
+
 Result<Profile> match_auto_profile(
     const Config& config, GameId game,
     const std::vector<win32::DisplayInfo>& displays) {
-    bool portrait_attached = false;
+    // Gather current modes once: geometry alone cannot answer resolution
+    // or aspect queries.
+    std::vector<DisplayFacts> facts;
     for (const auto& display : displays) {
-        if (display.is_attached &&
-            display.right - display.left > 0 &&
-            display.bottom - display.top > display.right - display.left) {
-            portrait_attached = true;
-            break;
+        if (!display.is_attached) {
+            continue;
         }
+        DisplayFacts entry{display, {0, 0}};
+        if (auto settings = win32::query_current_settings(display.device_name);
+            settings) {
+            entry.current = Resolution{settings->width, settings->height};
+        } else if (display.right > display.left &&
+                   display.bottom > display.top) {
+            // No queryable mode (headless/virtual display): the geometry is
+            // the best available statement of the current resolution.
+            entry.current = Resolution{
+                static_cast<uint32_t>(display.right - display.left),
+                static_cast<uint32_t>(display.bottom - display.top)};
+        }
+        facts.push_back(std::move(entry));
     }
 
+    // Plan section 17.3: manual profiles are NEVER auto-selected. The
+    // default profile is the final fallback (the user designated it).
+    const Profile* best = nullptr;
+    int best_score = -1;
     const Profile* fallback = nullptr;
     for (const auto& profile : config.profiles) {
         if (profile.game != game) {
             continue;
         }
-        if (portrait_attached && profile.ui.mobile_ui) {
-            return profile;
-        }
-        if (!portrait_attached && !profile.ui.mobile_ui && fallback == nullptr) {
+        if (profile.id == config.default_profile) {
             fallback = &profile;
         }
+        if (!profile.match.auto_select) {
+            continue;
+        }
+        for (const auto& display : facts) {
+            const int score = match_score(profile, display);
+            if (score >= 0 &&
+                (score + profile.match.priority >
+                     best_score + (best ? best->match.priority : 0) ||
+                 best == nullptr)) {
+                best = &profile;
+                best_score = score;
+            }
+        }
+    }
+    if (best != nullptr) {
+        return *best;
     }
     if (fallback != nullptr) {
         return *fallback;
     }
     return std::unexpected(Error::make(
         ErrorCode::ProfileNotFound,
-        "no matching profile for game '" + std::string(to_string(game)) +
+        "no matching auto profile for game '" + std::string(to_string(game)) +
             "' (add one to config.toml)"));
 }
 

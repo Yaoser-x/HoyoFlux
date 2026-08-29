@@ -31,7 +31,7 @@ TEST_CASE("Profile defaults: session-scoped, mobile UI off, power save off",
     CHECK_FALSE(p.ui.mobile_ui);
     CHECK(p.runtime.power_save == PowerSavePolicy::Disabled);
     CHECK(p.runtime.fps == 120);
-    CHECK(p.match == MatchPolicy::Manual);
+    CHECK_FALSE(p.match.auto_select);  // manual is the default
 }
 
 TEST_CASE("Render policy carries optional resolution and monitor",

@@ -68,8 +68,19 @@ struct UiPolicy {
     std::optional<float> dpi_scale;  // 1.0 == 100%; absent == leave game default
 };
 
-// How a profile is selected when the user asks for `--profile auto`.
-enum class MatchPolicy { Manual, Auto };
+// How a profile is selected when the user asks for `--profile auto` (F8).
+// A profile declares WHAT it is for; the matcher walks the displays and
+// picks by identity before geometry. A profile with auto_select=false is
+// never chosen automatically - only an explicit --profile can select it.
+struct MatchPolicy {
+    bool auto_select{false};
+
+    std::optional<std::wstring> device_name;   // exact monitor identity
+    std::optional<Resolution> resolution;      // exact current resolution
+    std::optional<float> aspect_ratio;         // e.g. 0.5625 (9:16 portrait)
+    std::optional<bool> portrait;              // orientation
+    int priority{0};  // higher wins among equally specific candidates
+};
 
 using ProfileId = std::string;
 
@@ -79,7 +90,7 @@ struct Profile {
     RenderPolicy render;
     UiPolicy ui;
     RuntimePolicy runtime;
-    MatchPolicy match{MatchPolicy::Manual};
+    MatchPolicy match{};  // auto_select=false: manual by default
 };
 
 }  // namespace hoyoflux

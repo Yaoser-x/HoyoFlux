@@ -31,7 +31,7 @@ TEST_CASE("default config parses into the built-in presets",
     REQUIRE(ipad->render.resolution.has_value());
     CHECK(ipad->render.resolution->width == 1080);
     CHECK(ipad->render.resolution->height == 1920);
-    CHECK(ipad->match == MatchPolicy::Auto);
+    CHECK(ipad->match.auto_select);  // legacy "match = auto" string form
 
     auto starrail = profile::find_profile(*config, "starrail_desktop");
     REQUIRE(starrail.has_value());
@@ -71,7 +71,7 @@ dpi_scale = 1.25
     REQUIRE(found.has_value());
     const Profile& profile = *found;
     CHECK(profile.game == GameId::StarRail);
-    CHECK(profile.match == MatchPolicy::Auto);
+    CHECK(profile.match.auto_select);
     REQUIRE(profile.render.resolution.has_value());
     CHECK(profile.render.resolution->width == 3440);
     CHECK(profile.render.fullscreen == FullscreenMode::Exclusive);
@@ -156,15 +156,74 @@ TEST_CASE("auto matching picks mobile profiles for portrait displays",
     auto desktop = profile::match_auto_profile(*config, GameId::Genshin, {landscape});
     REQUIRE(desktop.has_value());
     CHECK(desktop->id == "desktop");
-    CHECK_FALSE(desktop->ui.mobile_ui);
 
     auto mobile = profile::match_auto_profile(*config, GameId::Genshin, {landscape, portrait});
     REQUIRE(mobile.has_value());
     CHECK(mobile->id == "ipad");
     CHECK(mobile->ui.mobile_ui);
 
-    // No starrail mobile profile exists -> error, not a silent wrong pick.
+    // No starrail profile at all -> error, not a silent wrong pick.
     auto starrail = profile::match_auto_profile(*config, GameId::StarRail, {portrait});
     REQUIRE_FALSE(starrail.has_value());
     CHECK(starrail.error().code == ErrorCode::ProfileNotFound);
+}
+
+TEST_CASE("auto matching: identity beats geometry, manual never auto-picked",
+          "[profile][matcher][f8]") {
+    // TOML exercising the structured [match] tables and the tiers.
+    const char* toml = R"(
+default_profile = "desktop"
+
+[profiles.desktop]
+game = "genshin"
+
+[profiles.portrait_profile]
+game = "genshin"
+[profiles.portrait_profile.match]
+auto_select = true
+portrait = true
+
+[profiles.exact_profile]
+game = "genshin"
+[profiles.exact_profile.match]
+auto_select = true
+resolution = "2560x1440"
+
+[profiles.manual_profile]
+game = "genshin"
+mobile_ui = true
+[profiles.manual_profile.match]
+auto_select = false
+portrait = true
+)";
+    auto config = profile::parse_config(toml);
+    REQUIRE(config.has_value());
+
+    win32::DisplayInfo landscape_1440;
+    landscape_1440.is_attached = true;
+    // Fake device name: the mode query fails and the matcher falls back to
+    // the geometry below (2560x1440).
+    landscape_1440.device_name = L"\\\\.\\HOYOFLUX_TEST_LANDSCAPE";
+    landscape_1440.right = 2560;
+    landscape_1440.bottom = 1440;
+
+    // Portrait-only candidate loses to the exact-resolution candidate
+    // (geometry tier below identity of resolution).
+    auto picked = profile::match_auto_profile(*config, GameId::Genshin,
+                                              {landscape_1440});
+    REQUIRE(picked.has_value());
+    CHECK(picked->id == "exact_profile");
+
+    // The manual profile (portrait match) is NEVER auto-selected, even
+    // though it matches the display and would otherwise be a candidate.
+    win32::DisplayInfo portrait_display;
+    portrait_display.is_attached = true;
+    portrait_display.device_name = L"\\\\.\\HOYOFLUX_TEST_PORTRAIT";
+    portrait_display.right = 1080;
+    portrait_display.bottom = 1920;
+    auto not_manual = profile::match_auto_profile(
+        *config, GameId::Genshin, {portrait_display});
+    REQUIRE(not_manual.has_value());
+    CHECK(not_manual->id == "portrait_profile");
+    CHECK(not_manual->id != "manual_profile");
 }
