@@ -137,6 +137,11 @@ std::unique_ptr<GameAdapter> make_adapter(GameId game);
 [[nodiscard]] Result<void> restore_persistent_roots(
     const PersistentDisplayState& state);
 
+// True when both states carry exactly the same roots and settings (used to
+// verify a recovery before the journal may be cleared).
+[[nodiscard]] bool persistent_state_equals(const PersistentDisplayState& a,
+                                           const PersistentDisplayState& b);
+
 // Unity Screenmanager value-name prefix (stable across Unity versions; the
 // hash suffix is not).
 inline constexpr std::wstring_view kUnityScreenmanagerPrefix = L"Screenmanager";

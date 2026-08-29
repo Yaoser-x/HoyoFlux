@@ -74,10 +74,49 @@ Result<RecoveryAction> SessionEngine::recover() {
         // `hoyoflux recover` reports this so the user can decide.
         return RecoveryAction::GameStillRunning;
     }
+
+    // Plan §10.2 order: game persistent state first, then physical displays.
+    Error failure{ErrorCode::None, ""};
+    bool failed = false;
+
+    if (stale.rollback.persistent_state.has_value()) {
+        if (auto restored =
+                game::restore_persistent_roots(*stale.rollback.persistent_state);
+            !restored) {
+            failed = true;
+            failure = restored.error();
+        }
+    }
+    if (!failed) {
+        if (auto restored = restore_display_snapshot(stale.rollback.displays);
+            !restored) {
+            failed = true;
+            failure = restored.error();
+        }
+    }
+    if (failed) {
+        // Plan §10.3: a failed restore NEVER clears the journal; recovery
+        // can be retried (or diagnosed) on the next run.
+        return RecoveryAction::RecoveryFailed;
+    }
+
+    // Verify the persistent-state restore before the journal is cleared.
+    if (stale.rollback.persistent_state.has_value()) {
+        std::vector<std::wstring> roots;
+        for (const auto& set : stale.rollback.persistent_state->sets) {
+            roots.push_back(set.root);
+        }
+        auto verify = game::snapshot_persistent_roots(roots);
+        if (!verify || !game::persistent_state_equals(
+                           *stale.rollback.persistent_state, *verify)) {
+            return RecoveryAction::RecoveryFailed;
+        }
+    }
+
     if (auto cleared = clear_journal(); !cleared) {
         return std::unexpected(cleared.error());
     }
-    return RecoveryAction::CleanedStaleJournal;
+    return RecoveryAction::Recovered;
 }
 
 Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
@@ -131,6 +170,9 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     journal.session_id = context.id;
     journal.game = request.game;
     journal.stage = SessionStage::Preparing;
+    if (persistent_snapshot.has_value()) {
+        journal.rollback.persistent_state = persistent_snapshot;
+    }
     if (auto displays = win32::enumerate_displays(); displays) {
         for (const auto& display : *displays) {
             if (!display.is_attached) {
@@ -139,7 +181,7 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
             if (auto settings =
                     win32::query_current_settings(display.device_name);
                 settings) {
-                journal.displays.push_back(JournalDisplay{*settings});
+                journal.rollback.displays.push_back(JournalDisplay{*settings});
             }
         }
     }
@@ -256,7 +298,7 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     // ---- Patching ---------------------------------------------------------
     context.stage = SessionStage::Patching;
     journal.stage = SessionStage::Patching;
-    journal.rollback_required = true;
+    journal.rollback.required = true;
     save_journal(journal);
 
     PatchContext patch_context{*resolved, request.profile,
@@ -276,9 +318,10 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     // Past this point patched pages may execute: external rollback is no
     // longer safe, and everything in the process - patches included - dies
     // with it.
+    // rollback.required stays true: even with patches live the recorded
+    // persistent/display state still has to survive a launcher crash (Test D).
     context.stage = SessionStage::Running;
     journal.stage = SessionStage::Running;
-    journal.rollback_required = false;
     save_journal(journal);
 
     if (game_has_run) {
@@ -316,7 +359,8 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     }
     // Plan-risk-3 fallback (auxiliary per plan §8): restore the physical
     // display modes captured at launch. Harmless when nothing changed them.
-    if (auto restored = restore_display_snapshot(journal.displays); !restored) {
+    if (auto restored = restore_display_snapshot(journal.rollback.displays);
+        !restored) {
         context.stage = SessionStage::Failed;
         clear_journal();
         return std::unexpected(restored.error());

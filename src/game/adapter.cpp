@@ -6,6 +6,7 @@
 
 #include "scan/pattern_scanner.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -120,6 +121,39 @@ Result<void> restore_persistent_roots(const PersistentDisplayState& state) {
         }
     }
     return {};
+}
+
+bool persistent_state_equals(const PersistentDisplayState& a,
+                             const PersistentDisplayState& b) {
+    if (a.sets.size() != b.sets.size()) {
+        return false;
+    }
+    for (const auto& set_a : a.sets) {
+        const auto* set_b = [&]() -> const PersistentSettingSet* {
+            for (const auto& candidate : b.sets) {
+                if (candidate.root == set_a.root) {
+                    return &candidate;
+                }
+            }
+            return nullptr;
+        }();
+        if (set_b == nullptr || set_b->settings.size() != set_a.settings.size()) {
+            return false;
+        }
+        for (const auto& setting : set_a.settings) {
+            const auto found = std::find_if(
+                set_b->settings.begin(), set_b->settings.end(),
+                [&](const PersistentSetting& candidate) {
+                    return candidate.name == setting.name &&
+                           candidate.type == setting.type &&
+                           candidate.data == setting.data;
+                });
+            if (found == set_b->settings.end()) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 Result<void> validate_profile(const Profile& profile, const CapabilityReport& report) {

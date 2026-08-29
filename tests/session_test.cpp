@@ -115,19 +115,37 @@ uint32_t dead_pid() {
 
 }  // namespace
 
-TEST_CASE("journal round trip keeps every field", "[session][journal]") {
+TEST_CASE("journal v2 round trip keeps every field", "[session][journal]") {
     session::ActiveSessionJournal journal;
     journal.session_id = "session-123";
     journal.game = GameId::StarRail;
     journal.pid = 4242;
     journal.stage = SessionStage::Patching;
-    journal.rollback_required = true;
-    journal.displays.push_back(
+    journal.rollback.required = true;
+    journal.rollback.displays.push_back(
         session::JournalDisplay{win32::DisplaySettings{
             L"\\\\.\\DISPLAY1", 2560, 1440, 144, 32, 0, 0, false}});
-    journal.displays.push_back(
+    journal.rollback.displays.push_back(
         session::JournalDisplay{win32::DisplaySettings{
             L"\\\\.\\DISPLAY2", 1080, 1920, 60, 32, 2560, -300, true}});
+
+    const std::array<uint32_t, 1> width{2560};
+    const std::array<uint32_t, 1> height{144};
+    hoyoflux::PersistentDisplayState persistent;
+    hoyoflux::PersistentSettingSet set;
+    set.root = L"Software\\miHoYo\\Genshin Impact";
+    set.settings.push_back(hoyoflux::PersistentSetting{
+        L"Screenmanager Resolution Width H907608738", REG_DWORD,
+        std::vector<std::byte>(
+            reinterpret_cast<const std::byte*>(width.data()),
+            reinterpret_cast<const std::byte*>(width.data() + 1))});
+    set.settings.push_back(hoyoflux::PersistentSetting{
+        L"Screenmanager Resolution Height H907608738", REG_DWORD,
+        std::vector<std::byte>(
+            reinterpret_cast<const std::byte*>(height.data()),
+            reinterpret_cast<const std::byte*>(height.data() + 1))});
+    persistent.sets.push_back(std::move(set));
+    journal.rollback.persistent_state = std::move(persistent);
 
     REQUIRE(session::save_journal(journal).has_value());
     auto loaded = session::load_journal();
@@ -137,19 +155,51 @@ TEST_CASE("journal round trip keeps every field", "[session][journal]") {
     CHECK((*loaded)->game == GameId::StarRail);
     CHECK((*loaded)->pid == 4242);
     CHECK((*loaded)->stage == SessionStage::Patching);
-    CHECK((*loaded)->rollback_required);
-    REQUIRE((*loaded)->displays.size() == 2);
-    CHECK((*loaded)->displays[0].settings.device_name == L"\\\\.\\DISPLAY1");
-    CHECK((*loaded)->displays[0].settings.width == 2560);
-    CHECK((*loaded)->displays[0].settings.refresh_rate == 144);
-    CHECK((*loaded)->displays[1].settings.position_x == 2560);
-    CHECK((*loaded)->displays[1].settings.position_y == -300);
-    CHECK((*loaded)->displays[1].settings.interlaced);
+    CHECK((*loaded)->rollback.required);
+    REQUIRE((*loaded)->rollback.displays.size() == 2);
+    CHECK((*loaded)->rollback.displays[0].settings.device_name ==
+          L"\\\\.\\DISPLAY1");
+    CHECK((*loaded)->rollback.displays[0].settings.width == 2560);
+    CHECK((*loaded)->rollback.displays[0].settings.refresh_rate == 144);
+    CHECK((*loaded)->rollback.displays[1].settings.position_x == 2560);
+    CHECK((*loaded)->rollback.displays[1].settings.position_y == -300);
+    CHECK((*loaded)->rollback.displays[1].settings.interlaced);
+
+    // The persistent state survives the JSON round trip byte-exact.
+    REQUIRE((*loaded)->rollback.persistent_state.has_value());
+    REQUIRE(game::persistent_state_equals(*journal.rollback.persistent_state,
+                                          *(*loaded)->rollback.persistent_state));
 
     REQUIRE(session::clear_journal().has_value());
     auto gone = session::load_journal();
     REQUIRE(gone.has_value());
     CHECK_FALSE(gone->has_value());
+}
+
+TEST_CASE("schema 1 journals still parse (physical displays only)",
+          "[session][journal]") {
+    session::ActiveSessionJournal modern;
+    modern.session_id = "legacy";
+    modern.pid = 7;
+    REQUIRE(session::save_journal(modern).has_value());
+    {
+        std::ofstream out(session::journal_path(),
+                          std::ios::binary | std::ios::trunc);
+        out << R"({"schema": 1, "session_id": "legacy", "game": "genshin",)"
+               R"( "pid": 7, "stage": "patching", "rollback_required": true,)"
+               R"( "displays": [{"device_name": "\\\\.\\DISPLAY1", "width": 2560,)"
+               R"( "height": 1440, "refresh_rate": 144, "bits_per_pixel": 32,)"
+               R"( "position_x": 0, "position_y": 0, "interlaced": false}]})";
+    }
+    auto loaded = session::load_journal();
+    REQUIRE(loaded.has_value());
+    REQUIRE(loaded->has_value());
+    CHECK((*loaded)->schema == 1);
+    CHECK((*loaded)->rollback.required);
+    REQUIRE((*loaded)->rollback.displays.size() == 1);
+    CHECK((*loaded)->rollback.displays[0].settings.width == 2560);
+    CHECK_FALSE((*loaded)->rollback.persistent_state.has_value());
+    REQUIRE(session::clear_journal().has_value());
 }
 
 TEST_CASE("corrupt journal is reported, not silently ignored", "[session][journal]") {
@@ -175,13 +225,14 @@ TEST_CASE("recover reacts to absent, stale and live journals", "[session][recove
     REQUIRE(none.has_value());
     CHECK(*none == session::RecoveryAction::None);
 
-    // Stale journal: dead pid -> cleared.
+    // Stale journal: dead pid -> real recovery (nothing recorded beyond the
+    // physical snapshot, so the restore is trivially complete -> cleared).
     session::ActiveSessionJournal stale;
     stale.pid = dead_pid();
     REQUIRE(session::save_journal(stale).has_value());
-    auto cleaned = engine.recover();
-    REQUIRE(cleaned.has_value());
-    CHECK(*cleaned == session::RecoveryAction::CleanedStaleJournal);
+    auto recovered = engine.recover();
+    REQUIRE(recovered.has_value());
+    CHECK(*recovered == session::RecoveryAction::Recovered);
     auto gone = session::load_journal();
     REQUIRE(gone.has_value());
     CHECK_FALSE(gone->has_value());
@@ -247,6 +298,101 @@ TEST_CASE("failed module wait fails the session and cleans the journal",
     auto journal = session::load_journal();
     REQUIRE(journal.has_value());
     CHECK_FALSE(journal->has_value());  // cleaned up, not left behind
+}
+
+TEST_CASE("recovery restores game persistent state before clearing the journal",
+          "[session][recover][f4]") {
+    auto adapter = std::make_unique<StubAdapter>(std::vector<game::ModuleRequirement>{});
+    session::SessionEngine engine(*adapter, fast_config());
+
+    const std::wstring root = L"Software\\HoyoFluxTest\\" +
+                              std::to_wstring(GetCurrentProcessId()) +
+                              L"\\recover";
+    RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+    const std::array<uint32_t, 1> desktop{2560};
+    const w32::RegistryValue desktop_state[] = {
+        {L"Screenmanager Resolution Width H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(desktop.data()),
+             reinterpret_cast<const std::byte*>(desktop.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, desktop_state).has_value());
+
+    // Journal records the desktop snapshot; then the "game" rewrites it.
+    const std::array<uint32_t, 1> ipad{1920};
+    const w32::RegistryValue game_wrote[] = {
+        {L"Screenmanager Resolution Width H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(ipad.data()),
+             reinterpret_cast<const std::byte*>(ipad.data() + 1))},
+    };
+
+    session::ActiveSessionJournal journal;
+    journal.pid = dead_pid();
+    journal.rollback.required = true;
+    hoyoflux::PersistentDisplayState persistent;
+    hoyoflux::PersistentSettingSet set;
+    set.root = root;
+    set.settings.push_back(hoyoflux::PersistentSetting{
+        L"Screenmanager Resolution Width H123", REG_DWORD,
+        std::vector<std::byte>(
+            reinterpret_cast<const std::byte*>(desktop.data()),
+            reinterpret_cast<const std::byte*>(desktop.data() + 1))});
+    persistent.sets.push_back(std::move(set));
+    journal.rollback.persistent_state = std::move(persistent);
+    REQUIRE(session::save_journal(journal).has_value());
+    REQUIRE(w32::write_registry_values(root, game_wrote).has_value());
+
+    auto action = engine.recover();
+    REQUIRE(action.has_value());
+    CHECK(*action == session::RecoveryAction::Recovered);
+
+    // The recorded value is back, and the journal is gone (plan 10.3: only
+    // after a verified restore).
+    auto values = w32::read_registry_values(root);
+    REQUIRE(values.has_value());
+    bool restored = false;
+    for (const auto& value : *values) {
+        if (value.name == L"Screenmanager Resolution Width H123") {
+            restored =
+                *reinterpret_cast<const uint32_t*>(value.data.data()) == 2560;
+        }
+    }
+    CHECK(restored);
+    auto gone = session::load_journal();
+    REQUIRE(gone.has_value());
+    CHECK_FALSE(gone->has_value());
+    RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+}
+
+TEST_CASE("failed recovery keeps the journal for a retry",
+          "[session][recover][f4]") {
+    auto adapter = std::make_unique<StubAdapter>(std::vector<game::ModuleRequirement>{});
+    session::SessionEngine engine(*adapter, fast_config());
+
+    // A root whose key name exceeds the registry's per-key length limit:
+    // the restore write must fail, so the journal must survive.
+    session::ActiveSessionJournal journal;
+    journal.pid = dead_pid();
+    journal.rollback.required = true;
+    hoyoflux::PersistentDisplayState persistent;
+    hoyoflux::PersistentSettingSet set;
+    set.root = L"Software\\HoyoFluxTest\\" + std::wstring(300, L'x');
+    set.settings.push_back(hoyoflux::PersistentSetting{
+        L"Screenmanager Resolution Width H123", REG_DWORD,
+        std::vector<std::byte>(4, std::byte{0})});
+    persistent.sets.push_back(std::move(set));
+    journal.rollback.persistent_state = std::move(persistent);
+    REQUIRE(session::save_journal(journal).has_value());
+
+    auto action = engine.recover();
+    REQUIRE(action.has_value());
+    CHECK(*action == session::RecoveryAction::RecoveryFailed);
+
+    auto still_there = session::load_journal();
+    REQUIRE(still_there.has_value());
+    REQUIRE(still_there->has_value());
+    REQUIRE(session::clear_journal().has_value());
 }
 
 TEST_CASE("persistent state guard snaps changed values back event-driven",

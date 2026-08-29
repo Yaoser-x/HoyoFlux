@@ -28,9 +28,13 @@
 namespace hoyoflux::session {
 
 enum class RecoveryAction {
-    None,                 // no journal present
-    CleanedStaleJournal,  // journal existed, its game process is dead
-    GameStillRunning,     // journal existed, its game process is still alive
+    None,              // no journal present
+    GameStillRunning,  // journal existed, its game process is still alive:
+                       // automatic recovery refused
+    Recovered,         // stale journal: recorded state restored AND verified,
+                       // journal cleared afterwards
+    RecoveryFailed,    // restore could not be completed or verified: the
+                       // journal is KEPT so recovery can be retried
 };
 
 struct SessionConfig {
@@ -49,8 +53,11 @@ public:
     // Runs the full non-resident session and blocks until the game exits.
     Result<SessionContext> run(const LaunchRequest& request);
 
-    // Called on every launcher start: clean up a leftover journal from a
-    // previous crash. Never touches a still-running game.
+    // Called on every launcher start: if a journal from a previous crash
+    // exists and its game process is gone, performs the recorded rollback
+    // (game persistent state, physical displays), VERIFIES the restore, and
+    // only then clears the journal (plan §10.3). A live game process is
+    // never touched.
     Result<RecoveryAction> recover();
 
 private:

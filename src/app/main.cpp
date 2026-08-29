@@ -350,7 +350,8 @@ int cmd_state_dump(const std::string& game_text) {
     return 0;
 }
 
-int cmd_recover() {    auto adapter = game::make_adapter(GameId::Genshin);
+int cmd_recover() {
+    auto adapter = game::make_adapter(GameId::Genshin);
     session::SessionEngine engine(*adapter);
     auto action = engine.recover();
     if (!action) {
@@ -361,12 +362,16 @@ int cmd_recover() {    auto adapter = game::make_adapter(GameId::Genshin);
     case session::RecoveryAction::None:
         std::cout << "no active-session journal found\n";
         return 0;
-    case session::RecoveryAction::CleanedStaleJournal:
-        std::cout << "stale journal cleaned\n";
+    case session::RecoveryAction::Recovered:
+        std::cout << "recovered: recorded state restored and verified\n";
         return 0;
     case session::RecoveryAction::GameStillRunning:
         std::cout << "journal references a live process; nothing done\n";
         return 1;
+    case session::RecoveryAction::RecoveryFailed:
+        std::cout << "recovery FAILED: recorded state could not be restored "
+                     "or verified; the journal is kept for a retry\n";
+        return 2;
     }
     return 0;
 }
