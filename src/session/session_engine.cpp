@@ -6,6 +6,7 @@
 #include "scan/module_snapshot.hpp"
 #include "session/display_guard.hpp"
 #include "session/journal.hpp"
+#include "session/persistent_state_guard.hpp"
 
 #include <windows.h>
 
@@ -108,6 +109,22 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
                                                                   request.profile));
         !valid) {
         return std::unexpected(valid.error());
+    }
+
+    // F2/F3: when the profile drives the render session-scoped, protect the
+    // game's own persisted settings: snapshot now, watch while the game
+    // runs, restore after it exits. A crash after this point leaves the
+    // snapshot in the journal (F4) for recovery.
+    const bool protect_persistent_state =
+        request.profile.render.resolution.has_value() &&
+        request.profile.render.persistence == ResolutionPersistence::Session;
+    std::optional<PersistentDisplayState> persistent_snapshot;
+    if (protect_persistent_state) {
+        auto snap = adapter_.snapshot_persistent_display_state();
+        if (!snap) {
+            return std::unexpected(snap.error());
+        }
+        persistent_snapshot = std::move(*snap);
     }
 
     ActiveSessionJournal journal;
@@ -272,12 +289,33 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         ResumeThread(launched->thread.get());
     }
 
+    // Game is running: keep the game's persisted settings desktop-shaped
+    // while it may rewrite them mid-session (plan §9.2, event-driven).
+    PersistentStateGuard guard;
+    if (persistent_snapshot.has_value()) {
+        if (auto started = guard.start(*persistent_snapshot); !started) {
+            return finish_failed({&*launched, &applied, true, started.error()});
+        }
+    }
+
     WaitForSingleObject(launched->process.get(), INFINITE);
 
     // ---- Restoring / Completed -------------------------------------------
     context.stage = SessionStage::Restoring;
-    // Plan-risk-3 fallback: until the game's resolution storage is identified
-    // on a live machine, unconditionally restore the captured snapshot.
+    guard.stop();
+    // F2 primary restore: whatever the game persisted for its next launch
+    // goes back to the pre-launch snapshot (Test C of the release gate).
+    if (persistent_snapshot.has_value()) {
+        if (auto restored =
+                adapter_.restore_persistent_display_state(*persistent_snapshot);
+            !restored) {
+            context.stage = SessionStage::Failed;
+            clear_journal();
+            return std::unexpected(restored.error());
+        }
+    }
+    // Plan-risk-3 fallback (auxiliary per plan §8): restore the physical
+    // display modes captured at launch. Harmless when nothing changed them.
     if (auto restored = restore_display_snapshot(journal.displays); !restored) {
         context.stage = SessionStage::Failed;
         clear_journal();

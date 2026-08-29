@@ -92,15 +92,15 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
         "power-save throttling is not implemented in this build (plan F6); "
         "launching with power_save enabled would silently do nothing");
 
-    // Until the game's persistent resolution storage is snapshotted and
-    // guarded (plan F2/F3), a session-scoped resolution cannot be promised.
+    // F2/F3: snapshot + event-driven guard + final restore. Marked
+    // Supported because the mechanism is real in this build; the four
+    // real-machine gates (Tests A-D) remain the release condition.
+    const bool guard_needed =
+        drive_render && profile.render.persistence == ResolutionPersistence::Session;
     add(Capability::PersistentStateGuard,
-        drive_render && profile.render.persistence == ResolutionPersistence::Session
-            ? CapabilityStatus::Unsupported
-            : CapabilityStatus::NotRequired,
-        "session-scoped resolution protection (persistent-state guard) is "
-        "not implemented in this build; the game may keep the custom "
-        "resolution after exit");
+        guard_needed ? CapabilityStatus::Supported : CapabilityStatus::NotRequired,
+        "snapshot + RegNotifyChangeKeyValue guard + final restore of the "
+        "game's Screenmanager values (real-machine gate pending)");
 
     return report;
 }

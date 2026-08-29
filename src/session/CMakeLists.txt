@@ -4,6 +4,7 @@
 add_library(hoyoflux_session STATIC
   display_guard.cpp
   journal.cpp
+  persistent_state_guard.cpp
   session_engine.cpp
 )
 

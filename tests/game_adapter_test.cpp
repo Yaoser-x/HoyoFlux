@@ -553,22 +553,15 @@ TEST_CASE("unsupported features stop validation with a reason",
         CHECK(valid.error().message.find("power-save") != std::string::npos);
     }
 
-    SECTION("session-scoped resolution requires the persistent-state guard") {
+    SECTION("session-scoped resolution rides on the persistent-state guard") {
+        // Since F2/F3 the guard is real in this build: snapshot + watch +
+        // final restore. A session-scoped render therefore validates.
         Profile profile;
         profile.render.resolution = Resolution{1080, 1920};
         profile.render.fullscreen = FullscreenMode::Windowed;
         auto valid = game::validate_profile(
             profile, adapter.capabilities(genshin_install, profile));
-        REQUIRE_FALSE(valid.has_value());
-        CHECK(valid.error().code == ErrorCode::NotSupported);
-        CHECK(valid.error().message.find("persistent-state guard") !=
-              std::string::npos);
-
-        // The user can opt out explicitly by accepting persistence.
-        profile.render.persistence = ResolutionPersistence::Persistent;
-        auto launched = game::validate_profile(
-            profile, adapter.capabilities(genshin_install, profile));
-        REQUIRE(launched.has_value());
+        REQUIRE(valid.has_value());
     }
 
     SECTION("borderless cannot be promised via launch arguments") {

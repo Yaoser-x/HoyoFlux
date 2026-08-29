@@ -5,18 +5,25 @@
 
 #include "game/game_adapter.hpp"
 #include "platform/win32/process.hpp"
+#include "platform/win32/registry.hpp"
 #include "session/journal.hpp"
+#include "session/persistent_state_guard.hpp"
 #include "session/session_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <windows.h>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <catch2/catch_assertion_result.hpp>
+
+namespace w32 = hoyoflux::win32;
 
 using namespace hoyoflux;
 namespace session = hoyoflux::session;
@@ -240,4 +247,62 @@ TEST_CASE("failed module wait fails the session and cleans the journal",
     auto journal = session::load_journal();
     REQUIRE(journal.has_value());
     CHECK_FALSE(journal->has_value());  // cleaned up, not left behind
+}
+
+TEST_CASE("persistent state guard snaps changed values back event-driven",
+          "[session][guard]") {
+    const std::wstring root = L"Software\\HoyoFluxTest\\" +
+                              std::to_wstring(GetCurrentProcessId()) +
+                              L"\\guard";
+    RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+
+    const std::array<uint32_t, 1> width{2560};
+    const w32::RegistryValue desktop_state[] = {
+        {L"Screenmanager Resolution Width H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(width.data()),
+             reinterpret_cast<const std::byte*>(width.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, desktop_state).has_value());
+
+    hoyoflux::PersistentDisplayState snapshot;
+    hoyoflux::PersistentSettingSet set;
+    set.root = root;
+    set.settings.push_back(hoyoflux::PersistentSetting{
+        L"Screenmanager Resolution Width H123", REG_DWORD,
+        std::vector<std::byte>(
+            reinterpret_cast<const std::byte*>(width.data()),
+            reinterpret_cast<const std::byte*>(width.data() + 1))});
+    snapshot.sets.push_back(std::move(set));
+
+    session::PersistentStateGuard guard;
+    REQUIRE(guard.start(snapshot).has_value());
+
+    // Simulate the game rewriting its persistent value.
+    const std::array<uint32_t, 1> ipad{1920};
+    const w32::RegistryValue game_wrote[] = {
+        {L"Screenmanager Resolution Width H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(ipad.data()),
+             reinterpret_cast<const std::byte*>(ipad.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, game_wrote).has_value());
+
+    // The guard restores without any polling from the test thread.
+    bool restored = false;
+    for (int i = 0; i < 100 && !restored; ++i) {
+        Sleep(20);
+        auto values = w32::read_registry_values(root);
+        REQUIRE(values.has_value());
+        for (const auto& value : *values) {
+            if (value.name == L"Screenmanager Resolution Width H123") {
+                restored = *reinterpret_cast<const uint32_t*>(value.data.data()) == 2560;
+            }
+        }
+    }
+    CHECK(restored);
+    CHECK(guard.restore_count() >= 1);
+
+    guard.stop();
+    RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
 }
