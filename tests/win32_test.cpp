@@ -13,6 +13,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <span>
@@ -211,6 +213,76 @@ TEST_CASE("launcher paths read without failing", "[win32][registry]") {
     // Machines without HoYoverse games installed must still succeed (empty).
     auto paths = w32::read_launcher_paths();
     REQUIRE(paths.has_value());
+}
+
+TEST_CASE("registry raw values round trip in a temporary key",
+          "[win32][registry][f2]") {
+    const std::wstring root =
+        L"Software\\HoyoFluxTest\\" + std::to_wstring(GetCurrentProcessId()) +
+        L"\\f2";
+
+    auto cleanup = [&] { RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str()); };
+    cleanup();
+
+    // A missing key reads as empty, not an error.
+    auto absent = w32::read_registry_values(root);
+    REQUIRE(absent.has_value());
+    CHECK(absent->empty());
+
+    const std::array<uint32_t, 1> width_value{2266};
+    const std::array<wchar_t, 4> name_value{L'a', L'b', L'c', L'\0'};
+    const std::vector<std::byte> binary{std::byte{0x01}, std::byte{0x02},
+                                        std::byte{0xFF}};
+    const w32::RegistryValue values[] = {
+        {L"Screenmanager Resolution Width H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(width_value.data()),
+             reinterpret_cast<const std::byte*>(width_value.data() + 1))},
+        {L"DisplayName", REG_SZ,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(name_value.data()),
+             reinterpret_cast<const std::byte*>(name_value.data() + 4))},
+        {L"blob", REG_BINARY, binary},
+    };
+    REQUIRE(w32::write_registry_values(root, values).has_value());
+
+    auto read_back = w32::read_registry_values(root);
+    REQUIRE(read_back.has_value());
+    REQUIRE(read_back->size() == 3);
+    std::sort(read_back->begin(), read_back->end(),
+              [](const auto& a, const auto& b) { return a.name < b.name; });
+    CHECK(read_back->at(0).name == L"DisplayName");
+    CHECK(read_back->at(0).type == REG_SZ);
+    CHECK(read_back->at(1).name == L"Screenmanager Resolution Width H123");
+    CHECK(read_back->at(1).type == REG_DWORD);
+    const uint32_t width = *reinterpret_cast<const uint32_t*>(
+        read_back->at(1).data.data());
+    CHECK(width == 2266);
+    CHECK(read_back->at(2).data == binary);
+
+    // Overwrite one value and re-read.
+    const std::array<uint32_t, 1> new_width{1080};
+    const w32::RegistryValue updated[] = {
+        {L"Screenmanager Resolution Width H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(new_width.data()),
+             reinterpret_cast<const std::byte*>(new_width.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, updated).has_value());
+    auto reread = w32::read_registry_values(root);
+    REQUIRE(reread.has_value());
+    for (const auto& value : *reread) {
+        if (value.name == L"Screenmanager Resolution Width H123") {
+            CHECK(*reinterpret_cast<const uint32_t*>(value.data.data()) == 1080);
+        }
+    }
+
+    REQUIRE(w32::registry_key_exists(root).has_value());
+    CHECK(w32::registry_key_exists(root).value());
+    cleanup();
+    auto gone = w32::registry_key_exists(root);
+    REQUIRE(gone.has_value());
+    CHECK_FALSE(*gone);
 }
 
 TEST_CASE("display enumeration is read-only", "[win32][display]") {

@@ -8,8 +8,10 @@
 #include "game/starrail/starrail_adapter.hpp"
 #include "game/starrail/signatures.hpp"
 #include "scan/signature.hpp"
+#include "platform/win32/registry.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <windows.h>
 
 #include <algorithm>
 #include <cstring>
@@ -20,6 +22,7 @@
 #include <vector>
 
 using namespace hoyoflux;
+namespace w32 = hoyoflux::win32;
 namespace genshin = hoyoflux::game::genshin;
 namespace starrail = hoyoflux::game::starrail;
 namespace scan = hoyoflux::scan;
@@ -601,6 +604,103 @@ TEST_CASE("genshin custom dpi validates when supported", "[game][capability]") {
     auto valid = game::validate_profile(
         profile, adapter.capabilities(genshin_install, profile));
     REQUIRE(valid.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// F2 persistent display state
+// ---------------------------------------------------------------------------
+
+TEST_CASE("persistent roots snapshot/restore protects Screenmanager values",
+          "[game][persistent-state]") {
+    const std::wstring root =
+        L"Software\\HoyoFluxTest\\" + std::to_wstring(GetCurrentProcessId()) +
+        L"\\snap";
+    RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+
+    const std::array<uint32_t, 1> width{2266};
+    const std::array<uint32_t, 1> height{1488};
+    const std::array<uint32_t, 1> other{1};
+    const w32::RegistryValue stored[] = {
+        {L"Screenmanager Resolution Width H907608738", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(width.data()),
+             reinterpret_cast<const std::byte*>(width.data() + 1))},
+        {L"Screenmanager Resolution Height H907608738", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(height.data()),
+             reinterpret_cast<const std::byte*>(height.data() + 1))},
+        {L"UnrelatedSetting", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(other.data()),
+             reinterpret_cast<const std::byte*>(other.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, stored).has_value());
+
+    // A missing root alongside the live one is skipped silently.
+    const std::wstring missing = root + L"\\absent";
+
+    auto snapshot = game::snapshot_persistent_roots({root, missing});
+    REQUIRE(snapshot.has_value());
+    REQUIRE(snapshot->sets.size() == 1);
+    REQUIRE(snapshot->sets[0].settings.size() == 2);
+    // Unrelated values are not captured; check by name, not position.
+    std::vector<std::wstring> names;
+    for (const auto& setting : snapshot->sets[0].settings) {
+        names.push_back(setting.name);
+    }
+    REQUIRE(names.size() == 2);
+    CHECK(std::find(names.begin(), names.end(),
+                    L"Screenmanager Resolution Width H907608738") != names.end());
+    CHECK(std::find(names.begin(), names.end(),
+                    L"Screenmanager Resolution Height H907608738") != names.end());
+    // ...and the decoded diagnostic view sees the resolution.
+    REQUIRE(snapshot->resolution.has_value());
+    CHECK(snapshot->resolution->width == 2266);
+    CHECK(snapshot->resolution->height == 1488);
+
+    // Simulate the game rewriting its persistent settings.
+    const std::array<uint32_t, 1> new_width{1080};
+    const std::array<uint32_t, 1> new_height{1920};
+    const w32::RegistryValue game_wrote[] = {
+        {L"Screenmanager Resolution Width H907608738", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(new_width.data()),
+             reinterpret_cast<const std::byte*>(new_width.data() + 1))},
+        {L"Screenmanager Resolution Height H907608738", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(new_height.data()),
+             reinterpret_cast<const std::byte*>(new_height.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, game_wrote).has_value());
+
+    // Restore replays the snapshot verbatim.
+    REQUIRE(game::restore_persistent_roots(*snapshot).has_value());
+    auto read_back = w32::read_registry_values(root);
+    REQUIRE(read_back.has_value());
+    for (const auto& value : *read_back) {
+        if (value.name == L"Screenmanager Resolution Width H907608738") {
+            CHECK(*reinterpret_cast<const uint32_t*>(value.data.data()) == 2266);
+        }
+        if (value.name == L"Screenmanager Resolution Height H907608738") {
+            CHECK(*reinterpret_cast<const uint32_t*>(value.data.data()) == 1488);
+        }
+    }
+
+    RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+}
+
+TEST_CASE("genshin persistent state snapshot reports absence honestly",
+          "[game][persistent-state]") {
+    // On a machine where the game has run, the snapshot succeeds; where it
+    // has not, it must be an explicit error - never an empty "success".
+    const GameInstall install{GameId::Genshin, true, "YuanShen.exe"};
+    hoyoflux::game::GenshinAdapter adapter;
+    auto state = adapter.snapshot_persistent_display_state();
+    if (state.has_value()) {
+        CHECK_FALSE(state->sets.empty());
+    } else {
+        CHECK(state.error().code == ErrorCode::NotSupported);
+    }
 }
 
 // ---------------------------------------------------------------------------

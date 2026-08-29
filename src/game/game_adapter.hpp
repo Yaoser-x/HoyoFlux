@@ -12,6 +12,7 @@
 #include "domain/game.hpp"
 #include "domain/launch_request.hpp"
 #include "domain/patch_plan.hpp"
+#include "domain/persistent_state.hpp"
 #include "domain/profile.hpp"
 #include "game/launch/launch_plan.hpp"
 #include "scan/module_snapshot.hpp"
@@ -80,6 +81,20 @@ public:
     virtual Result<GameLaunchPlan> build_launch_plan(
         const GameInstall& install, const LaunchRequest& request) const = 0;
 
+    // F2: the game's own persisted display settings (its config for the NEXT
+    // launch), distinct from the physical Windows display mode. Snapshot
+    // before the session, restore after it - this is what keeps an iPad
+    // resolution session from leaking into official launcher launches.
+    virtual Result<PersistentDisplayState> snapshot_persistent_display_state()
+        const;
+    virtual Result<void> restore_persistent_display_state(
+        const PersistentDisplayState& state) const;
+
+    // HKCU subkeys this game persists display settings into. Games override;
+    // the default (empty) means "nothing known to protect". Public because
+    // doctor / state-dump must report on the candidate roots themselves.
+    virtual std::vector<std::wstring> persistent_state_roots() const;
+
     // Version detection (e.g. Genshin old-vs-new by exe size).
     virtual Result<bool> is_old_version(const GameInstall& install) const = 0;
 
@@ -110,6 +125,21 @@ std::unique_ptr<GameAdapter> make_adapter(GameId game);
 // the launch instead of being silently ignored.
 [[nodiscard]] Result<void> validate_profile(const Profile& profile,
                                             const CapabilityReport& report);
+
+// Shared F2 implementation used by the adapters: capture every
+// "Screenmanager*" value stored under each existing root (Unity's standard
+// persistent display settings); restore replays them verbatim. The watched
+// roots come from the adapter, never a hardcoded value list - the
+// real-machine A/B experiment (docs/persistent-state-experiment.md)
+// validates coverage.
+[[nodiscard]] Result<PersistentDisplayState> snapshot_persistent_roots(
+    const std::vector<std::wstring>& roots);
+[[nodiscard]] Result<void> restore_persistent_roots(
+    const PersistentDisplayState& state);
+
+// Unity Screenmanager value-name prefix (stable across Unity versions; the
+// hash suffix is not).
+inline constexpr std::wstring_view kUnityScreenmanagerPrefix = L"Screenmanager";
 
 // First resolved signature with this id, or nullptr.
 const ResolvedSignature* find_resolved(const std::vector<ResolvedSignature>& resolved,

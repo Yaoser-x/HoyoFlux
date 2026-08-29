@@ -129,6 +129,13 @@ Result<bool> StarRailAdapter::is_old_version(const GameInstall& /*install*/) con
     return false;
 }
 
+std::vector<std::wstring> StarRailAdapter::persistent_state_roots() const {
+    // See GenshinAdapter::persistent_state_roots for the experiment that
+    // validates this list.
+    return {L"Software\\miHoYo\\崩坏：星穹铁道",
+            L"Software\\Cognosphere\\Star Rail"};
+}
+
 Result<ModuleRequirements> StarRailAdapter::module_requirements(
     const GameInstall& /*install*/, const Profile& profile) const {
     ModuleRequirements requirements;

@@ -148,8 +148,15 @@ Result<GameLaunchPlan> GenshinAdapter::build_launch_plan(
     return plan;
 }
 
-Result<bool> GenshinAdapter::is_old_version(const GameInstall& install) const {
-    std::error_code ec;
+std::vector<std::wstring> GenshinAdapter::persistent_state_roots() const {
+    // Unity Screenmanager settings live under the game's own HKCU key. The
+    // CN and Global installs use different key names; both are watched (only
+    // existing ones produce a snapshot). The real-machine A/B experiment
+    // (docs/persistent-state-experiment.md) validates this root list.
+    return {L"Software\\miHoYo\\原神", L"Software\\miHoYo\\Genshin Impact"};
+}
+
+Result<bool> GenshinAdapter::is_old_version(const GameInstall& install) const {    std::error_code ec;
     const uintmax_t size = std::filesystem::file_size(install.exe_path, ec);
     if (ec) {
         return std::unexpected(Error::make(

@@ -154,4 +154,106 @@ Result<LauncherPaths> read_launcher_paths() {
     return paths;
 }
 
+Result<bool> registry_key_exists(std::wstring_view subkey) {
+    HKEY raw = nullptr;
+    const LSTATUS status =
+        RegOpenKeyExW(HKEY_CURRENT_USER, std::wstring(subkey).c_str(), 0,
+                      KEY_READ, &raw);
+    if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) {
+        return false;
+    }
+    if (status != ERROR_SUCCESS) {
+        return std::unexpected(Error::make(
+            ErrorCode::RegistryReadFailed,
+            "RegOpenKeyExW failed for " + utf8(subkey), status));
+    }
+    RegCloseKey(raw);
+    return true;
+}
+
+Result<std::vector<RegistryValue>> read_registry_values(
+    std::wstring_view subkey) {
+    RegKey key;
+    {
+        HKEY raw = nullptr;
+        const LSTATUS status =
+            RegOpenKeyExW(HKEY_CURRENT_USER, std::wstring(subkey).c_str(), 0,
+                          KEY_READ, &raw);
+        if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) {
+            return std::vector<RegistryValue>{};
+        }
+        if (status != ERROR_SUCCESS) {
+            return std::unexpected(Error::make(
+                ErrorCode::RegistryReadFailed,
+                "RegOpenKeyExW failed for " + utf8(subkey), status));
+        }
+        key = RegKey(raw);
+    }
+
+    DWORD count = 0;
+    DWORD max_name_len = 0;
+    DWORD max_data_len = 0;
+    if (const LSTATUS status = RegQueryInfoKeyW(
+            key.get(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            &count, &max_name_len, &max_data_len, nullptr, nullptr);
+        status != ERROR_SUCCESS) {
+        return std::unexpected(Error::make(
+            ErrorCode::RegistryReadFailed, "RegQueryInfoKeyW failed", status));
+    }
+
+    std::vector<RegistryValue> values;
+    values.reserve(count);
+    std::wstring name(max_name_len + 1, L'\0');
+    std::vector<std::byte> data(max_data_len + 1);
+    for (DWORD i = 0; i < count; ++i) {
+        DWORD name_len = static_cast<DWORD>(name.size());
+        DWORD data_len = static_cast<DWORD>(data.size());
+        DWORD type = 0;
+        const LSTATUS status =
+            RegEnumValueW(key.get(), i, name.data(), &name_len, nullptr, &type,
+                          reinterpret_cast<LPBYTE>(data.data()), &data_len);
+        if (status == ERROR_NO_MORE_ITEMS) {
+            break;
+        }
+        if (status != ERROR_SUCCESS) {
+            return std::unexpected(Error::make(
+                ErrorCode::RegistryReadFailed, "RegEnumValueW failed", status));
+        }
+        RegistryValue value;
+        value.name.assign(name.data(), name_len);
+        value.type = type;
+        value.data.assign(data.data(), data.data() + data_len);
+        values.push_back(std::move(value));
+    }
+    return values;
+}
+
+Result<void> write_registry_values(std::wstring_view subkey,
+                                   std::span<const RegistryValue> values) {
+    HKEY raw = nullptr;
+    LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER,
+                                     std::wstring(subkey).c_str(), 0, nullptr,
+                                     REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                                     nullptr, &raw, nullptr);
+    if (status != ERROR_SUCCESS) {
+        return std::unexpected(Error::make(
+            ErrorCode::RegistryReadFailed,
+            "RegCreateKeyExW failed for " + utf8(subkey), status));
+    }
+    RegKey key(raw);
+    for (const RegistryValue& value : values) {
+        status =
+            RegSetValueExW(key.get(), value.name.c_str(), 0, value.type,
+                           reinterpret_cast<const BYTE*>(value.data.data()),
+                           static_cast<DWORD>(value.data.size()));
+        if (status != ERROR_SUCCESS) {
+            return std::unexpected(Error::make(
+                ErrorCode::RegistryReadFailed,
+                "RegSetValueExW failed for '" + utf8(value.name) + "'",
+                status));
+        }
+    }
+    return {};
+}
+
 }  // namespace hoyoflux::win32

@@ -309,8 +309,48 @@ int cmd_doctor() {
     return failures == 0 ? 0 : 1;
 }
 
-int cmd_recover() {
-    auto adapter = game::make_adapter(GameId::Genshin);
+// Read-only dump of a game's persistent display settings (plan §7.2). This
+// is the A/B experiment tool: dump before a session, dump after, diff the
+// output. It never writes anything.
+int cmd_state_dump(const std::string& game_text) {
+    const auto game = parse_game_id(game_text);
+    auto adapter = game::make_adapter(game);
+
+    std::cout << "persistent-state roots for " << to_string(game) << ":\n";
+    for (const auto& root : adapter->persistent_state_roots()) {
+        auto exists = win32::registry_key_exists(root);
+        std::cout << "  " << (exists && *exists ? "[x] " : "[ ] ")
+                  << "HKCU\\" << std::string(root.begin(), root.end()) << "\n";
+        if (!exists || !*exists) {
+            continue;
+        }
+        auto values = win32::read_registry_values(root);
+        if (!values) {
+            std::cout << "      error: " << values.error().message << "\n";
+            continue;
+        }
+        size_t shown = 0;
+        for (const auto& value : *values) {
+            if (value.name.rfind(L"Screenmanager", 0) != 0) {
+                continue;
+            }
+            std::cout << "      " << std::string(value.name.begin(), value.name.end());
+            if (value.type == REG_DWORD && value.data.size() == 4) {
+                uint32_t dword = 0;
+                std::memcpy(&dword, value.data.data(), sizeof(dword));
+                std::cout << " = " << dword;
+            }
+            std::cout << "\n";
+            ++shown;
+        }
+        if (shown == 0) {
+            std::cout << "      (no Screenmanager values)\n";
+        }
+    }
+    return 0;
+}
+
+int cmd_recover() {    auto adapter = game::make_adapter(GameId::Genshin);
     session::SessionEngine engine(*adapter);
     auto action = engine.recover();
     if (!action) {
@@ -444,6 +484,14 @@ int main(int argc, char** argv) {
     app.add_subcommand("recover", "clean a stale session journal")
         ->callback([&] { exit_code = cmd_recover(); })
         ->group("Commands");
+    std::string dump_game;
+    app.add_subcommand("state-dump",
+                       "print a game's persistent display settings (read-only)")
+        ->callback([&] { exit_code = cmd_state_dump(dump_game); })
+        ->group("Commands")
+        ->add_option("game", dump_game, "genshin | starrail")
+        ->check(CLI::IsMember({"genshin", "starrail"}))
+        ->required();
 
     try {
         app.parse(static_cast<int>(parsed_argv.size()), parsed_argv.data());
