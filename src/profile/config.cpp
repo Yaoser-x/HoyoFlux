@@ -162,6 +162,9 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
                     context + ": unknown priority '" + *priority + "'"));
             }
         }
+        if (const auto hotkeys = opt_bool(table, "hotkeys")) {
+            profile.runtime.hotkeys = *hotkeys;
+        }
         if (const auto* power_save = table.get("power_save");
             power_save && power_save->is_table()) {
             const auto& ps = *power_save->as_table();

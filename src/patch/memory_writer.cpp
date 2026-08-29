@@ -3,6 +3,8 @@
 #include <memoryapi.h>
 #include <minwinbase.h>
 
+#include <array>
+#include <cstring>
 #include <string>
 
 namespace hoyoflux::patch {
@@ -146,6 +148,13 @@ Result<uintptr_t> allocate_code_near(const win32::UniqueHandle& process,
                                      uintptr_t near_address, size_t size) {
     return allocate_near_protect(process, near_address, size,
                                  PAGE_EXECUTE_READWRITE);
+}
+
+Result<void> write_u32(const win32::UniqueHandle& process, uintptr_t address,
+                       uint32_t value) {
+    std::array<std::byte, 4> raw{};
+    std::memcpy(raw.data(), &value, sizeof(value));
+    return write_protected(process, address, raw);
 }
 
 Result<void> free_remote(const win32::UniqueHandle& process, uintptr_t address) {

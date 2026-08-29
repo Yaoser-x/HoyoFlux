@@ -30,8 +30,12 @@ CapabilityReport StarRailAdapter::capabilities(const GameInstall& /*install*/,
     add(Capability::FpsUnlock, CapabilityStatus::Supported,
         "fps variable write + mov flip (starrail.fps / starrail.fpsmovflip)");
 
-    add(Capability::DynamicFps, CapabilityStatus::Unsupported,
-        "in-game fps changes (hotkeys) are not implemented in this build");
+    // F7: hotkey service + direct variable write via fps_direct_address.
+    add(Capability::DynamicFps,
+        profile.runtime.hotkeys ? CapabilityStatus::Supported
+                                : CapabilityStatus::NotRequired,
+        "END toggles fps control, Ctrl+Up/Down steps it (real-machine gate "
+        "pending)");
 
     add(Capability::CustomResolution,
         drive_render ? CapabilityStatus::Supported : CapabilityStatus::NotRequired,
@@ -70,10 +74,10 @@ CapabilityReport StarRailAdapter::capabilities(const GameInstall& /*install*/,
 
     add(Capability::PowerSave,
         profile.runtime.power_save == PowerSavePolicy::Enabled
-            ? CapabilityStatus::Unsupported
+            ? CapabilityStatus::Supported
             : CapabilityStatus::NotRequired,
-        "power-save throttling is not implemented in this build (plan F6); "
-        "launching with power_save enabled would silently do nothing");
+        "EVENT_SYSTEM_FOREGROUND throttle to power_save_fps (real-machine "
+        "gate pending)");
 
     const bool guard_needed =
         drive_render && profile.render.persistence == ResolutionPersistence::Session;
@@ -191,9 +195,9 @@ Result<PatchPlan> StarRailAdapter::build_patch_plan(const PatchContext& context)
         }
     }
 
-    // No RemoteState allocation: nothing here references it. A future
-    // resident component (dynamic FPS) re-writes the game variable via the
-    // same address; the mov flip keeps our value authoritative.
+    // F7 dynamic fps channel: a resident controller re-writes the game's
+    // variable directly (the mov flip keeps our value authoritative).
+    plan.fps_direct_address = fps->fields[0];
 
     // Mobile UI (F5): same real-game gate as Genshin - the mechanism exists
     // (starrail::StarRailMobileUiPatchBuilder) but the payload is unvalidated.

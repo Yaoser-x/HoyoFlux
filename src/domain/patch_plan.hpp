@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -122,6 +123,11 @@ struct RemoteStateLayout {
 struct PatchPlan {
     std::vector<PatchOperation> operations;
     RemoteStateLayout runtime;
+
+    // F7: for plans that patch the fps variable directly (no RemoteState
+    // redirect), the address a resident controller writes profile fps to.
+    // Empty = the plan has no dynamic fps channel (e.g. fps redirect only).
+    std::optional<uintptr_t> fps_direct_address;
 };
 
 }  // namespace hoyoflux

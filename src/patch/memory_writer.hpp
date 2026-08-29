@@ -36,6 +36,11 @@ Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
 Result<uintptr_t> allocate_code_near(const win32::UniqueHandle& process,
                                      uintptr_t near_address, size_t size);
 
+// F7: write one 32-bit value (the dynamic fps channel for plans without a
+// RemoteState redirect).
+Result<void> write_u32(const win32::UniqueHandle& process, uintptr_t address,
+                       uint32_t value);
+
 // Release a block returned by allocate_near. Never call while the game may
 // still read the block.
 Result<void> free_remote(const win32::UniqueHandle& process, uintptr_t address);

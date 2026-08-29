@@ -12,5 +12,5 @@ target_include_directories(hoyoflux_session PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 target_link_libraries(hoyoflux_session
   PUBLIC hoyoflux_domain hoyoflux_game hoyoflux_patch hoyoflux_platform_win32
-         hoyoflux_scan
+         hoyoflux_scan hoyoflux_runtime
 )

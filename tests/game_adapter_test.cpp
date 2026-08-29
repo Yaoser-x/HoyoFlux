@@ -547,14 +547,19 @@ TEST_CASE("unsupported features stop validation with a reason",
               std::string::npos);
     }
 
-    SECTION("power_save enabled would be a silent no-op today") {
+    SECTION("power_save enabled is honored since F6 - and only then exists") {
         Profile profile;
         profile.runtime.power_save = PowerSavePolicy::Enabled;
         auto valid = game::validate_profile(
             profile, adapter.capabilities(genshin_install, profile));
-        REQUIRE_FALSE(valid.has_value());
-        CHECK(valid.error().code == ErrorCode::NotSupported);
-        CHECK(valid.error().message.find("power-save") != std::string::npos);
+        REQUIRE(valid.has_value());
+
+        // Disabled stays the default and reports NotRequired.
+        Profile off;
+        off.runtime.power_save = PowerSavePolicy::Disabled;
+        const auto report = adapter.capabilities(genshin_install, off);
+        CHECK(report.status_of(Capability::PowerSave) ==
+              CapabilityStatus::NotRequired);
     }
 
     SECTION("session-scoped resolution rides on the persistent-state guard") {

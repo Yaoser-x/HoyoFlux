@@ -58,6 +58,9 @@ struct RuntimePolicy {
     PowerSavePolicy power_save{PowerSavePolicy::Disabled};
     uint32_t power_save_fps{30};
     ProcessPriority priority{ProcessPriority::Normal};
+    // F7: END toggles the fps control on/off, Ctrl+Up/Down step the fps.
+    // Off = no hotkey thread exists at all.
+    bool hotkeys{false};
 };
 
 struct UiPolicy {

@@ -6,6 +6,9 @@
 #include "scan/module_snapshot.hpp"
 #include "session/display_guard.hpp"
 #include "session/journal.hpp"
+#include "patch/memory_writer.hpp"
+#include "patch/remote_state.hpp"
+#include "runtime/runtime_controller.hpp"
 #include "session/persistent_state_guard.hpp"
 
 #include <windows.h>
@@ -341,10 +344,50 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         }
     }
 
+    // F6/F7 resident runtime: power-save foreground reactions and hotkeys.
+    // With both disabled nothing is created - HoyoFlux then never touches
+    // the fps channel while the game runs (the plan's regression gate).
+    const bool power_save =
+        request.profile.runtime.power_save == PowerSavePolicy::Enabled;
+    const bool hotkeys = request.profile.runtime.hotkeys;
+    runtime::RuntimeController controller;
+    if (power_save || hotkeys) {
+        runtime::RuntimeController::Config controller_config;
+        controller_config.game_pid = launched->pid;
+        controller_config.profile_fps = request.profile.runtime.fps;
+        controller_config.power_save_fps = request.profile.runtime.power_save_fps;
+        controller_config.power_save_enabled = power_save;
+        controller_config.hotkeys_enabled = hotkeys;
+        // The writer is bound to whatever fps channel the plan established:
+        // the RemoteState slot (Genshin redirect) or the direct variable
+        // (Star Rail write + mov flip).
+        PatchPlan plan_copy = *plan;
+        runtime::RuntimeController::FpsWriter writer =
+            [&process = launched->process, &applied,
+             &plan_copy](uint32_t fps) -> Result<void> {
+            if (applied.runtime.base != 0) {
+                return patch::write_remote_fps(process, applied.runtime.base,
+                                               fps);
+            }
+            if (plan_copy.fps_direct_address.has_value()) {
+                return patch::write_u32(process, *plan_copy.fps_direct_address,
+                                        fps);
+            }
+            return std::unexpected(Error::make(
+                ErrorCode::NotSupported,
+                "no dynamic fps channel in the applied plan"));
+        };
+        if (auto started = controller.start(controller_config, writer);
+            !started) {
+            return finish_failed({&*launched, &applied, true, started.error()});
+        }
+    }
+
     WaitForSingleObject(launched->process.get(), INFINITE);
 
     // ---- Restoring / Completed -------------------------------------------
     context.stage = SessionStage::Restoring;
+    controller.stop();
     guard.stop();
     // F2 primary restore: whatever the game persisted for its next launch
     // goes back to the pre-launch snapshot (Test C of the release gate).

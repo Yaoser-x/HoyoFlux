@@ -32,7 +32,8 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Component targets. Dependency direction is strictly one-way:
-#   domain -> platform_win32 / scan -> patch -> game -> session -> app -> cli
+#   domain -> platform_win32 / scan -> patch -> game -> session ->
+#   runtime -> app -> cli
 # Each component declares its own target in its own CMakeLists.txt.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/domain)
@@ -41,6 +42,7 @@ add_subdirectory(src/scan)
 add_subdirectory(src/patch)
 add_subdirectory(src/game)
 add_subdirectory(src/session)
+add_subdirectory(src/runtime)
 add_subdirectory(src/profile)
 add_subdirectory(src/app)
 

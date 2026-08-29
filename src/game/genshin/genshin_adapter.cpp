@@ -43,8 +43,12 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
     add(Capability::FpsUnlock, CapabilityStatus::Supported,
         "fps redirect patch (first resolved genshin.fps.* signature)");
 
-    add(Capability::DynamicFps, CapabilityStatus::Unsupported,
-        "in-game fps changes (hotkeys) are not implemented in this build");
+    // F7: hotkey service (RegisterHotKey) + the RemoteState fps channel.
+    add(Capability::DynamicFps,
+        profile.runtime.hotkeys ? CapabilityStatus::Supported
+                                : CapabilityStatus::NotRequired,
+        "END toggles fps control, Ctrl+Up/Down steps it (real-machine gate "
+        "pending)");
 
     add(Capability::CustomResolution,
         drive_render ? CapabilityStatus::Supported : CapabilityStatus::NotRequired,
@@ -89,12 +93,15 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
                                          : CapabilityStatus::NotRequired,
         "GetDPI prologue replacement patch (genshin.dpi)");
 
+    // F6: event-driven foreground hook, exactly one 4-byte write per focus
+    // change through the RemoteState fps channel. Disabled means no listener
+    // exists at all.
     add(Capability::PowerSave,
         profile.runtime.power_save == PowerSavePolicy::Enabled
-            ? CapabilityStatus::Unsupported
+            ? CapabilityStatus::Supported
             : CapabilityStatus::NotRequired,
-        "power-save throttling is not implemented in this build (plan F6); "
-        "launching with power_save enabled would silently do nothing");
+        "EVENT_SYSTEM_FOREGROUND throttle to power_save_fps (real-machine "
+        "gate pending)");
 
     // F2/F3: snapshot + event-driven guard + final restore. Marked
     // Supported because the mechanism is real in this build; the four
