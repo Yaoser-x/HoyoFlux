@@ -31,3 +31,8 @@ add_executable(scan_pattern_test scan_pattern_test.cpp)
 target_link_libraries(scan_pattern_test PRIVATE hoyoflux_domain hoyoflux_scan
                       Catch2::Catch2WithMain)
 add_test(NAME scan_pattern_test COMMAND scan_pattern_test)
+
+add_executable(signature_test signature_test.cpp)
+target_link_libraries(signature_test PRIVATE hoyoflux_domain hoyoflux_scan
+                      hoyoflux_game Catch2::Catch2WithMain)
+add_test(NAME signature_test COMMAND signature_test)
