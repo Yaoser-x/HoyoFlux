@@ -34,6 +34,7 @@ add_subdirectory(src/scan)
 add_subdirectory(src/patch)
 add_subdirectory(src/game)
 add_subdirectory(src/session)
+add_subdirectory(src/profile)
 
 if(HOYOFLUX_BUILD_TESTS)
   enable_testing()

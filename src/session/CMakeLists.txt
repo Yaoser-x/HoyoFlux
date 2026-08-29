@@ -2,6 +2,7 @@
 # allowed to coordinate adapters, patch engine and platform teardown.
 
 add_library(hoyoflux_session STATIC
+  display_guard.cpp
   journal.cpp
   session_engine.cpp
 )

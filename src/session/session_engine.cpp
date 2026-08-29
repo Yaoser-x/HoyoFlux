@@ -4,6 +4,7 @@
 #include "platform/win32/display.hpp"
 #include "platform/win32/process.hpp"
 #include "scan/module_snapshot.hpp"
+#include "session/display_guard.hpp"
 #include "session/journal.hpp"
 
 #include <windows.h>
@@ -257,8 +258,13 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
 
     // ---- Restoring / Completed -------------------------------------------
     context.stage = SessionStage::Restoring;
-    // A8 display restore hooks in here when the guard actually changes
-    // display settings; the captured snapshot lives in the journal.
+    // Plan-risk-3 fallback: until the game's resolution storage is identified
+    // on a live machine, unconditionally restore the captured snapshot.
+    if (auto restored = restore_display_snapshot(journal.displays); !restored) {
+        context.stage = SessionStage::Failed;
+        clear_journal();
+        return std::unexpected(restored.error());
+    }
     if (auto cleared = clear_journal(); !cleared) {
         context.stage = SessionStage::Failed;
         return std::unexpected(cleared.error());
