@@ -3,8 +3,11 @@
 # signatures.hpp / adapter.cpp.
 
 add_library(hoyoflux_game STATIC
+  adapter.cpp
   genshin/signatures.cpp
+  genshin/genshin_adapter.cpp
   starrail/signatures.cpp
+  starrail/starrail_adapter.cpp
 )
 
 target_include_directories(hoyoflux_game PUBLIC ${CMAKE_SOURCE_DIR}/src)

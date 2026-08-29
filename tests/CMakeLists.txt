@@ -36,3 +36,8 @@ add_executable(signature_test signature_test.cpp)
 target_link_libraries(signature_test PRIVATE hoyoflux_domain hoyoflux_scan
                       hoyoflux_game Catch2::Catch2WithMain)
 add_test(NAME signature_test COMMAND signature_test)
+
+add_executable(game_adapter_test game_adapter_test.cpp)
+target_link_libraries(game_adapter_test PRIVATE hoyoflux_domain hoyoflux_scan
+                      hoyoflux_game Catch2::Catch2WithMain)
+add_test(NAME game_adapter_test COMMAND game_adapter_test)
