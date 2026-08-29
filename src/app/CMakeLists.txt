@@ -5,6 +5,7 @@ enable_language(RC)
 
 add_executable(hoyoflux
   main.cpp
+  doctor.cpp
   hoyoflux.rc
 )
 
