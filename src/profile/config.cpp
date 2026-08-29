@@ -3,6 +3,7 @@
 #include <toml++/toml.hpp>
 
 #include <fstream>
+#include <system_error>
 #include <sstream>
 
 namespace hoyoflux::profile {
@@ -45,7 +46,10 @@ std::optional<std::string> opt_string(const toml::table& table, std::string_view
     return std::nullopt;
 }
 
-Result<Resolution> parse_resolution(std::string_view text, std::string_view context) {
+// std::from_chars throughout: a malformed value is a reported error, never
+// an escaping std::invalid_argument (plan 18.1).
+Result<Resolution> parse_resolution(std::string_view text,
+                                    std::string_view context) {
     const auto x = text.find('x');
     if (x == std::string_view::npos || x == 0 || x + 1 >= text.size()) {
         return std::unexpected(Error::make(
@@ -53,9 +57,17 @@ Result<Resolution> parse_resolution(std::string_view text, std::string_view cont
             std::string(context) + ": resolution must look like \"2560x1440\""));
     }
     Resolution resolution;
-    resolution.width = static_cast<uint32_t>(std::stoi(std::string(text.substr(0, x))));
-    resolution.height =
-        static_cast<uint32_t>(std::stoi(std::string(text.substr(x + 1))));
+    const auto* begin = text.data();
+    const auto* mid = begin + x;
+    const auto* end = begin + text.size();
+    const auto [w_ptr, w_ec] = std::from_chars(begin, mid, resolution.width);
+    const auto [h_ptr, h_ec] = std::from_chars(mid + 1, end, resolution.height);
+    if (w_ec != std::errc{} || w_ptr != mid || h_ec != std::errc{} ||
+        h_ptr != end) {
+        return std::unexpected(Error::make(
+            ErrorCode::ProfileInvalid,
+            std::string(context) + ": resolution must look like \"2560x1440\""));
+    }
     if (resolution.empty()) {
         return std::unexpected(Error::make(ErrorCode::ProfileInvalid,
                                            std::string(context) +
@@ -163,10 +175,14 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
                     context + ": persistence must be session|persistent"));
             }
         }
-        profile.render.monitor = opt_int(table, "monitor")
-                                     .transform([](int64_t v) {
-                                         return static_cast<uint32_t>(v);
-                                     });
+        if (const auto monitor = opt_int(table, "monitor")) {
+            if (*monitor < 0 || *monitor > 63) {
+                return std::unexpected(Error::make(
+                    ErrorCode::ProfileInvalid,
+                    context + ": monitor must be within [0, 63]"));
+            }
+            profile.render.monitor = static_cast<uint32_t>(*monitor);
+        }
     }
 
     if (const auto* runtime = body.get("runtime"); runtime && runtime->is_table()) {
@@ -207,6 +223,11 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
                     *enabled ? PowerSavePolicy::Enabled : PowerSavePolicy::Disabled;
             }
             if (const auto fps = opt_int(ps, "fps")) {
+                if (*fps < 1 || *fps > 1000) {
+                    return std::unexpected(Error::make(
+                        ErrorCode::ProfileInvalid,
+                        context + ": power_save fps must be within [1, 1000]"));
+                }
                 profile.runtime.power_save_fps = static_cast<uint32_t>(*fps);
             }
         }
@@ -234,6 +255,7 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
 
 std::string default_config_toml() {
     return R"(# HoyoFlux configuration. See `hoyoflux profile list` for the parsed view.
+schema = 1
 default_profile = "desktop"
 
 [profiles.desktop]
@@ -304,6 +326,18 @@ Result<Config> parse_config(std::string_view toml_text) {
     }
 
     Config config;
+    // Forward-compatibility key (plan 18.4): absent = schema 1. A future
+    // schema bumps this and migrates old files on load.
+    if (const auto schema = root.get("schema");
+        schema && schema->is_integer()) {
+        const auto value = schema->value<int64_t>().value_or(0);
+        if (value != 1) {
+            return std::unexpected(Error::make(
+                ErrorCode::ConfigParseFailed,
+                "unsupported config schema " + std::to_string(static_cast<long long>(value)) +
+                    " (this build understands schema 1); update HoyoFlux"));
+        }
+    }
     if (const auto* profiles = root.get("profiles"); profiles && profiles->is_table()) {
         for (auto&& [key, value] : *profiles->as_table()) {
             if (!value.is_table()) {
@@ -329,9 +363,31 @@ Result<Config> parse_config(std::string_view toml_text) {
 Result<Config> load_config(const std::filesystem::path& path) {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
-        // First run: parse the built-in default document so the caller sees
-        // the same shape a user file has.
-        return parse_config(default_config_toml());
+        // First run (plan 18.3): materialize the built-in default document
+        // so the user has a real file to edit. A failed write (read-only
+        // directory) is not fatal - the defaults still parse and the next
+        // run tries again.
+        const std::string default_toml = default_config_toml();
+        if (std::filesystem::create_directories(path.parent_path(), ec); !ec) {
+            const auto temp = path.parent_path() /
+                              (path.filename().wstring() + L".tmp");
+            {
+                std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+                if (file) {
+                    file.write(default_toml.data(),
+                               static_cast<std::streamsize>(default_toml.size()));
+                }
+            }
+            if (!ec) {
+                std::filesystem::rename(temp, path, ec);
+                if (ec) {
+                    std::filesystem::remove(temp, ec);
+                    ec.clear();
+                }
+            }
+        }
+        ec.clear();
+        return parse_config(default_toml);
     }
     std::ifstream file(path, std::ios::binary);
     if (!file) {

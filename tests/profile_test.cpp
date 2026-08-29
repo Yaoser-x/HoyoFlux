@@ -4,6 +4,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <windows.h>
+
+#include <filesystem>
 #include <string>
 
 using namespace hoyoflux;
@@ -226,4 +229,53 @@ portrait = true
     REQUIRE(not_manual.has_value());
     CHECK(not_manual->id == "portrait_profile");
     CHECK(not_manual->id != "manual_profile");
+}
+
+TEST_CASE("config parsing never throws on malformed values (F9)",
+          "[profile][f9]") {
+    // Every one of these used to escape std::invalid_argument.
+    const char* bad_docs[] = {
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.render]\nresolution = \"abcxdef\"\n",
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.render]\nresolution = \"-5x30\"\n",
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.render]\nresolution = \"20x\"\n",
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.render]\nresolution = \" 20x30\"\n",
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.render]\nmonitor = -1\n",
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.render]\nmonitor = 999\n",
+        "[profiles.p]\ngame = \"genshin\"\n[profiles.p.runtime.power_save]\nfps = 0\n",
+        "schema = 2\n[profiles.p]\ngame = \"genshin\"\n",
+    };
+    for (const char* doc : bad_docs) {
+        INFO(doc);
+        auto parsed = profile::parse_config(doc);
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK((parsed.error().code == ErrorCode::ProfileInvalid ||
+               parsed.error().code == ErrorCode::ConfigParseFailed));
+    }
+
+    // Monitor 63 is fine, schema 1 is accepted.
+    auto ok = profile::parse_config(
+        "[profiles.p]\ngame = \"genshin\"\nschema = 1\n"
+        "[profiles.p.render]\nmonitor = 63\n");
+    REQUIRE(ok.has_value());
+    CHECK(ok->profiles.size() == 1);
+}
+
+TEST_CASE("first run materializes config.toml (F9)", "[profile][f9]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_f9_" + std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    const auto path = dir / "config.toml";
+
+    auto config = profile::load_config(path);
+    REQUIRE(config.has_value());
+    CHECK_FALSE(config->profiles.empty());
+
+    // The file now exists on disk with the same content shape.
+    REQUIRE(std::filesystem::exists(path));
+    auto reloaded = profile::load_config(path);
+    REQUIRE(reloaded.has_value());
+    CHECK(reloaded->profiles.size() == config->profiles.size());
+    CHECK(reloaded->default_profile == config->default_profile);
+
+    std::filesystem::remove_all(dir);
 }
