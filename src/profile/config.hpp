@@ -10,7 +10,9 @@
 //
 //   [profiles.desktop.render]
 //   resolution = "2560x1440"     # "WxH"; absent = leave as-is
-//   fullscreen = "borderless"    # exclusive | borderless | windowed
+//   fullscreen = "windowed"     # exclusive | windowed; absent = leave as-is
+//                               # (borderless parses but no game can set it
+//                               # via launch arguments, so it fails the gate)
 //   persistence = "session"     # session | persistent
 //   monitor = 0                 # display index; absent = primary
 //

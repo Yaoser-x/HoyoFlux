@@ -29,8 +29,15 @@ struct LaunchedProcess {
     DWORD tid{0};
 };
 
-// Build a Windows command line from argv-style tokens (quoting rules follow
-// CommandLineToArgvW semantics for the simple cases; documented in .cpp).
+// Encode one argv token as a Windows command-line argument, following
+// CommandLineToArgvW rules exactly: spaces/tabs force quoting, embedded
+// quotes are escaped, and backslash runs double up only when they precede a
+// quote or end the argument. Empty tokens become "".
+[[nodiscard]] std::wstring quote_windows_argument(std::wstring_view arg);
+
+// Build a Windows command line from argv-style tokens by encoding each one
+// with quote_windows_argument and joining with single spaces. The result
+// round-trips through CommandLineToArgvW back to `args`.
 std::wstring build_command_line(const std::vector<std::wstring>& args);
 
 // CreateProcessW with CREATE_SUSPENDED. `priority_class` may be 0 to keep the

@@ -571,6 +571,7 @@ TEST_CASE("unsupported features stop validation with a reason",
     SECTION("borderless cannot be promised via launch arguments") {
         Profile profile;
         profile.render.resolution = Resolution{2560, 1440};
+        profile.render.fullscreen = FullscreenMode::Borderless;
         profile.render.persistence = ResolutionPersistence::Persistent;
         auto valid = game::validate_profile(
             profile, adapter.capabilities(genshin_install, profile));
@@ -600,4 +601,120 @@ TEST_CASE("genshin custom dpi validates when supported", "[game][capability]") {
     auto valid = game::validate_profile(
         profile, adapter.capabilities(genshin_install, profile));
     REQUIRE(valid.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// F1 render launch pipeline
+// ---------------------------------------------------------------------------
+
+TEST_CASE("build_render_arguments maps only verified mechanisms",
+          "[game][launch]") {
+    using hoyoflux::game::build_render_arguments;
+
+    SECTION("no render policy -> no arguments") {
+        RenderPolicy render;
+        auto args = build_render_arguments(render);
+        REQUIRE(args.has_value());
+        CHECK(args->empty());
+    }
+
+    SECTION("resolution -> -screen-width/-screen-height") {
+        RenderPolicy render;
+        render.resolution = Resolution{2266, 1488};
+        auto args = build_render_arguments(render);
+        REQUIRE(args.has_value());
+        const std::vector<std::wstring> expected = {L"-screen-width", L"2266",
+                                                    L"-screen-height", L"1488"};
+        CHECK(*args == expected);
+    }
+
+    SECTION("windowed -> -screen-fullscreen 0") {
+        RenderPolicy render;
+        render.fullscreen = FullscreenMode::Windowed;
+        auto args = build_render_arguments(render);
+        REQUIRE(args.has_value());
+        CHECK(*args == std::vector<std::wstring>{L"-screen-fullscreen", L"0"});
+    }
+
+    SECTION("exclusive -> -screen-fullscreen 1") {
+        RenderPolicy render;
+        render.fullscreen = FullscreenMode::Exclusive;
+        auto args = build_render_arguments(render);
+        REQUIRE(args.has_value());
+        CHECK(*args == std::vector<std::wstring>{L"-screen-fullscreen", L"1"});
+    }
+
+    SECTION("borderless is refused, never guessed") {
+        RenderPolicy render;
+        render.fullscreen = FullscreenMode::Borderless;
+        auto args = build_render_arguments(render);
+        REQUIRE_FALSE(args.has_value());
+        CHECK(args.error().code == ErrorCode::NotSupported);
+    }
+}
+
+TEST_CASE("merge_passthrough appends verbatim and rejects managed conflicts",
+          "[game][launch]") {
+    using hoyoflux::game::merge_passthrough;
+
+    const std::vector<std::wstring> managed = {L"-screen-width", L"1080"};
+
+    SECTION("unrelated passthrough is appended in order") {
+        auto merged = merge_passthrough(managed, {L"-window-mode", L"exclusive"},
+                                        "genshin");
+        REQUIRE(merged.has_value());
+        const std::vector<std::wstring> expected = {L"-screen-width", L"1080",
+                                                    L"-window-mode", L"exclusive"};
+        CHECK(*merged == expected);
+    }
+
+    SECTION("defining a managed field twice is an error") {
+        auto merged = merge_passthrough(managed, {L"-screen-height", L"1920"},
+                                        "genshin");
+        REQUIRE_FALSE(merged.has_value());
+        CHECK(merged.error().code == ErrorCode::InvalidArgument);
+        CHECK(merged.error().message.find("screen-height") != std::string::npos);
+    }
+
+    SECTION("conflict detection is case-insensitive") {
+        auto merged =
+            merge_passthrough(managed, {L"-SCREEN-WIDTH", L"800"}, "genshin");
+        REQUIRE_FALSE(merged.has_value());
+    }
+}
+
+TEST_CASE("genshin build_launch_plan composes the full argv",
+          "[game][genshin][launch]") {
+    const GameInstall install{GameId::Genshin, true, "D:\\Games\\Genshin\\YuanShen.exe"};
+    hoyoflux::game::GenshinAdapter adapter;
+
+    LaunchRequest request;
+    request.profile.id = "ipad";
+    request.profile.render.resolution = Resolution{1080, 1920};
+    request.profile.render.fullscreen = FullscreenMode::Windowed;
+    request.profile.runtime.priority = ProcessPriority::High;
+    request.game_args = {L"-sound", L"off"};
+
+    auto plan = adapter.build_launch_plan(install, request);
+    REQUIRE(plan.has_value());
+    CHECK(plan->executable == install.exe_path);
+    CHECK(plan->working_directory == install.exe_path.parent_path());
+    CHECK(plan->priority == ProcessPriority::High);
+    const std::vector<std::wstring> expected = {
+        L"-screen-width", L"1080", L"-screen-height", L"1920",
+        L"-screen-fullscreen", L"0", L"-sound", L"off"};
+    CHECK(plan->arguments == expected);
+}
+
+TEST_CASE("genshin build_launch_plan rejects passthrough render conflicts",
+          "[game][genshin][launch]") {
+    const GameInstall install{GameId::Genshin, true, "YuanShen.exe"};
+    hoyoflux::game::GenshinAdapter adapter;
+
+    LaunchRequest request;
+    request.profile.render.resolution = Resolution{1080, 1920};
+    request.game_args = {L"-screen-width", L"800"};
+    auto plan = adapter.build_launch_plan(install, request);
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().code == ErrorCode::InvalidArgument);
 }

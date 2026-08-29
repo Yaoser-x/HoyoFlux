@@ -54,6 +54,15 @@ public:
     Result<GameInstall> locate_installation(game::Region) const override {
         return GameInstall{GameId::Genshin, true, cmd_path()};
     }
+    Result<hoyoflux::game::GameLaunchPlan> build_launch_plan(
+        const GameInstall&, const LaunchRequest& request) const override {
+        // The stub's game_args are cmd.exe arguments, passed through as-is.
+        hoyoflux::game::GameLaunchPlan plan;
+        plan.executable = cmd_path();
+        plan.working_directory = cmd_path().parent_path();
+        plan.arguments = request.game_args;
+        return plan;
+    }
     Result<bool> is_old_version(const GameInstall&) const override { return false; }
     Result<game::ModuleRequirements> module_requirements(
         const GameInstall&, const Profile&) const override {

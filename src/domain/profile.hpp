@@ -42,7 +42,13 @@ enum class PowerSavePolicy { Disabled, Enabled };
 
 struct RenderPolicy {
     std::optional<Resolution> resolution;
-    FullscreenMode fullscreen{FullscreenMode::Borderless};
+
+    // Absent = do not pass -screen-fullscreen at all; the game keeps its own
+    // current mode. Only modes a game adapter can express as verified launch
+    // arguments may be set (borderless is not one of them - see the
+    // adapters' capability reports).
+    std::optional<FullscreenMode> fullscreen;
+
     ResolutionPersistence persistence{ResolutionPersistence::Session};
     std::optional<uint32_t> monitor;  // display index; 0 = primary
 };

@@ -19,3 +19,6 @@
 add_library(hoyoflux_domain INTERFACE)
 target_include_directories(hoyoflux_domain INTERFACE ${CMAKE_SOURCE_DIR}/src)
 target_compile_features(hoyoflux_domain INTERFACE cxx_std_23)
+
+# Generated version header (CMake single version source, plan §1).
+target_include_directories(hoyoflux_domain INTERFACE ${CMAKE_BINARY_DIR}/generated)

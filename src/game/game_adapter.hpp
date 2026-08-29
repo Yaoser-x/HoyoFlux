@@ -10,8 +10,10 @@
 #include "domain/capability.hpp"
 #include "domain/error.hpp"
 #include "domain/game.hpp"
+#include "domain/launch_request.hpp"
 #include "domain/patch_plan.hpp"
 #include "domain/profile.hpp"
+#include "game/launch/launch_plan.hpp"
 #include "scan/module_snapshot.hpp"
 #include "scan/signature.hpp"
 
@@ -70,6 +72,13 @@ public:
     // Locate the game executable (launcher registry). Region::Auto prefers
     // the CN install, falling back to Global.
     virtual Result<GameInstall> locate_installation(Region region) const = 0;
+
+    // F1: turn install + validated request (profile render policy + raw
+    // passthrough) into the exact process plan the engine executes. This is
+    // the only place game launch arguments exist; the session engine never
+    // sees a Unity flag.
+    virtual Result<GameLaunchPlan> build_launch_plan(
+        const GameInstall& install, const LaunchRequest& request) const = 0;
 
     // Version detection (e.g. Genshin old-vs-new by exe size).
     virtual Result<bool> is_old_version(const GameInstall& install) const = 0;

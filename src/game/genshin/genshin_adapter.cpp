@@ -4,7 +4,6 @@
 #include "platform/win32/registry.hpp"
 #include "scan/pattern_scanner.hpp"
 #include "scan/signature.hpp"
-
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -38,7 +37,7 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
     };
 
     const bool drive_render = profile.render.resolution.has_value();
-    const FullscreenMode fullscreen = profile.render.fullscreen;
+    const auto& fullscreen = profile.render.fullscreen;
 
     add(Capability::FpsUnlock, CapabilityStatus::Supported,
         "fps redirect patch (first resolved genshin.fps.* signature)");
@@ -57,10 +56,10 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
     // path (plan F2/F3) or by setting it in-game once.
     CapabilityStatus fullscreen_status = CapabilityStatus::Unsupported;
     std::string fullscreen_reason;
-    if (!drive_render) {
+    if (!drive_render || !fullscreen.has_value()) {
         fullscreen_status = CapabilityStatus::NotRequired;
-    } else if (fullscreen == FullscreenMode::Windowed ||
-               fullscreen == FullscreenMode::Exclusive) {
+    } else if (*fullscreen == FullscreenMode::Windowed ||
+               *fullscreen == FullscreenMode::Exclusive) {
         fullscreen_status = CapabilityStatus::Supported;
         fullscreen_reason = "-screen-fullscreen launch argument";
     } else {
@@ -124,6 +123,29 @@ Result<GameInstall> GenshinAdapter::locate_installation(Region region) const {
     return std::unexpected(Error::make(
         ErrorCode::ProcessNotFound,
         "Genshin Impact installation not found (CN or Global launcher registry)"));
+}
+
+Result<GameLaunchPlan> GenshinAdapter::build_launch_plan(
+    const GameInstall& install, const LaunchRequest& request) const {
+    auto render_args = build_render_arguments(request.profile.render);
+    if (!render_args) {
+        return std::unexpected(render_args.error());
+    }
+    // Managed render fields first, verbatim user passthrough after - the
+    // game's own argv parser sees profile settings win by construction, and
+    // conflicts were rejected outright in merge_passthrough.
+    auto arguments = merge_passthrough(*render_args, request.game_args,
+                                       to_string(GameId::Genshin));
+    if (!arguments) {
+        return std::unexpected(arguments.error());
+    }
+
+    GameLaunchPlan plan;
+    plan.executable = install.exe_path;
+    plan.working_directory = install.exe_path.parent_path();
+    plan.arguments = std::move(*arguments);
+    plan.priority = request.profile.runtime.priority;
+    return plan;
 }
 
 Result<bool> GenshinAdapter::is_old_version(const GameInstall& install) const {

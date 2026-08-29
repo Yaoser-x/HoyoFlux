@@ -10,6 +10,8 @@ public:
     CapabilityReport capabilities(const GameInstall& install,
                                   const Profile& profile) const override;
     Result<GameInstall> locate_installation(Region region) const override;
+    Result<GameLaunchPlan> build_launch_plan(
+        const GameInstall& install, const LaunchRequest& request) const override;
     Result<bool> is_old_version(const GameInstall& install) const override;
     Result<ModuleRequirements> module_requirements(
         const GameInstall& install, const Profile& profile) const override;

@@ -37,7 +37,7 @@ Result<void> validate_profile(const Profile& profile, const CapabilityReport& re
     const std::pair<Capability, bool> required[] = {
         {Capability::FpsUnlock, true},
         {Capability::CustomResolution, drive_render},
-        {Capability::FullscreenMode, drive_render},
+        {Capability::FullscreenMode, drive_render && profile.render.fullscreen.has_value()},
         {Capability::MonitorSelection, profile.render.monitor.has_value()},
         {Capability::MobileUi, profile.ui.mobile_ui},
         {Capability::CustomDpi, profile.ui.dpi_scale.has_value()},

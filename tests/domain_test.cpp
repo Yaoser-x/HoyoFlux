@@ -43,7 +43,11 @@ TEST_CASE("Render policy carries optional resolution and monitor",
     REQUIRE(p.render.resolution.has_value());
     CHECK(p.render.resolution->width == 2266);
     CHECK(p.render.monitor.value() == 1);
-    CHECK(p.render.fullscreen == FullscreenMode::Borderless);
+    // fullscreen is optional: absent = never pass -screen-fullscreen.
+    CHECK_FALSE(p.render.fullscreen.has_value());
+    p.render.fullscreen = FullscreenMode::Windowed;
+    REQUIRE(p.render.fullscreen.has_value());
+    CHECK(*p.render.fullscreen == FullscreenMode::Windowed);
 }
 
 TEST_CASE("Result error path", "[domain][error]") {

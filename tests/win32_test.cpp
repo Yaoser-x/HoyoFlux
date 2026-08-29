@@ -9,6 +9,7 @@
 #include "platform/win32/unique_handle.hpp"
 
 #include <windows.h>
+#include <shellapi.h>  // CommandLineToArgvW
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -132,6 +133,43 @@ TEST_CASE("build_command_line quoting", "[win32][process]") {
     CHECK(w32::build_command_line({L"C:\\Program Files\\Game\\YuanShen.exe",
                                    L"-popupwindow"}) ==
           L"\"C:\\Program Files\\Game\\YuanShen.exe\" -popupwindow");
+}
+
+TEST_CASE("quote_windows_argument follows CommandLineToArgvW rules",
+          "[win32][process]") {
+    using w32::quote_windows_argument;
+    CHECK(quote_windows_argument(L"plain") == L"plain");
+    CHECK(quote_windows_argument(L"") == L"\"\"");
+    CHECK(quote_windows_argument(L"with space") == L"\"with space\"");
+    CHECK(quote_windows_argument(L"with\ttab") == L"\"with\ttab\"");
+
+    // Backslashes are literal unless they precede a quote or end the arg.
+    CHECK(quote_windows_argument(L"C:\\a\\b") == L"C:\\a\\b");
+    // An unquoted token never needs backslash protection...
+    CHECK(quote_windows_argument(L"before\\") == L"before\\");
+    // ...but a quoted one does: trailing backslashes sit before the closing
+    // quote, so they double.
+    CHECK(quote_windows_argument(L"before \\") == L"\"before \\\\\"");
+    CHECK(quote_windows_argument(L"two \\\\") == L"\"two \\\\\\\\\"");
+
+    // n backslashes + quote -> 2n+1 backslashes + \".
+    CHECK(quote_windows_argument(L"a\\\"b") == L"\"a\\\\\\\"b\"");
+    CHECK(quote_windows_argument(L"a\\\\\"b") == L"\"a\\\\\\\\\\\"b\"");
+    CHECK(quote_windows_argument(L"say \"hi\"") == L"\"say \\\"hi\\\"\"");
+
+    // The whole line round-trips through CommandLineToArgvW.
+    const std::vector<std::wstring> args = {
+        L"C:\\Program Files\\Game\\YuanShen.exe", L"-screen-width", L"2560",
+        L"trailing\\", L"q\"uote", L""};
+    const std::wstring line = w32::build_command_line(args);
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(line.c_str(), &argc);
+    REQUIRE(argv != nullptr);
+    REQUIRE(argc == static_cast<int>(args.size()));
+    for (size_t i = 0; i < args.size(); ++i) {
+        CHECK(std::wstring(argv[i]) == args[i]);
+    }
+    LocalFree(argv);
 }
 
 TEST_CASE("process enumeration finds self", "[win32][process]") {

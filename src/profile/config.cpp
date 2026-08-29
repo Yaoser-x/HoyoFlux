@@ -203,7 +203,6 @@ default_profile = "desktop"
 game = "genshin"
 
 [profiles.desktop.render]
-fullscreen = "borderless"
 persistence = "session"
 
 [profiles.desktop.runtime]

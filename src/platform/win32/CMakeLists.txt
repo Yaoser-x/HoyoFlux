@@ -14,5 +14,5 @@ target_include_directories(hoyoflux_platform_win32 PUBLIC ${CMAKE_SOURCE_DIR}/sr
 
 target_link_libraries(hoyoflux_platform_win32
   PUBLIC hoyoflux_domain
-  PRIVATE advapi32 user32
+  PRIVATE advapi32 user32 shell32
 )

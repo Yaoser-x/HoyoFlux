@@ -24,7 +24,7 @@ CapabilityReport StarRailAdapter::capabilities(const GameInstall& /*install*/,
     };
 
     const bool drive_render = profile.render.resolution.has_value();
-    const FullscreenMode fullscreen = profile.render.fullscreen;
+    const auto& fullscreen = profile.render.fullscreen;
 
     add(Capability::FpsUnlock, CapabilityStatus::Supported,
         "fps variable write + mov flip (starrail.fps / starrail.fpsmovflip)");
@@ -39,10 +39,10 @@ CapabilityReport StarRailAdapter::capabilities(const GameInstall& /*install*/,
 
     CapabilityStatus fullscreen_status = CapabilityStatus::Unsupported;
     std::string fullscreen_reason;
-    if (!drive_render) {
+    if (!drive_render || !fullscreen.has_value()) {
         fullscreen_status = CapabilityStatus::NotRequired;
-    } else if (fullscreen == FullscreenMode::Windowed ||
-               fullscreen == FullscreenMode::Exclusive) {
+    } else if (*fullscreen == FullscreenMode::Windowed ||
+               *fullscreen == FullscreenMode::Exclusive) {
         fullscreen_status = CapabilityStatus::Supported;
         fullscreen_reason = "-screen-fullscreen launch argument";
     } else {
@@ -102,6 +102,26 @@ Result<GameInstall> StarRailAdapter::locate_installation(Region region) const {
     return std::unexpected(Error::make(
         ErrorCode::ProcessNotFound,
         "Honkai: Star Rail installation not found (CN or Global launcher registry)"));
+}
+
+Result<GameLaunchPlan> StarRailAdapter::build_launch_plan(
+    const GameInstall& install, const LaunchRequest& request) const {
+    auto render_args = build_render_arguments(request.profile.render);
+    if (!render_args) {
+        return std::unexpected(render_args.error());
+    }
+    auto arguments = merge_passthrough(*render_args, request.game_args,
+                                       to_string(GameId::StarRail));
+    if (!arguments) {
+        return std::unexpected(arguments.error());
+    }
+
+    GameLaunchPlan plan;
+    plan.executable = install.exe_path;
+    plan.working_directory = install.exe_path.parent_path();
+    plan.arguments = std::move(*arguments);
+    plan.priority = request.profile.runtime.priority;
+    return plan;
 }
 
 Result<bool> StarRailAdapter::is_old_version(const GameInstall& /*install*/) const {

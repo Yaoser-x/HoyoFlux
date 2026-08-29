@@ -158,10 +158,20 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     };
 
     // ---- Launching --------------------------------------------------------
+    // The adapter owns the game-argument mapping (plan F1); the engine only
+    // executes the resulting plan and never sees a Unity flag.
     context.stage = SessionStage::Launching;
-    auto launched = win32::spawn_suspended(
-        install->exe_path, request.game_args, install->exe_path.parent_path(),
-        priority_class(request.profile.runtime.priority));
+    auto launch_plan = adapter_.build_launch_plan(*install, request);
+    if (!launch_plan) {
+        journal.stage = SessionStage::Failed;
+        save_journal(journal);
+        clear_journal();
+        return std::unexpected(launch_plan.error());
+    }
+    auto launched =
+        win32::spawn_suspended(launch_plan->executable, launch_plan->arguments,
+                               launch_plan->working_directory,
+                               priority_class(launch_plan->priority));
     if (!launched) {
         journal.stage = SessionStage::Failed;
         save_journal(journal);

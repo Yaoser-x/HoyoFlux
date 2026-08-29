@@ -28,28 +28,46 @@ Error win32_error(ErrorCode code, std::string_view what) {
 
 }  // namespace
 
+std::wstring quote_windows_argument(std::wstring_view arg) {
+    // Nothing to protect: a token without whitespace, quotes or NULs is
+    // passed through verbatim.
+    if (!arg.empty() &&
+        arg.find_first_of(L" \t\"") == std::wstring_view::npos) {
+        return std::wstring(arg);
+    }
+
+    std::wstring out;
+    out.reserve(arg.size() + 2);
+    out += L'"';
+    size_t backslashes = 0;
+    for (const wchar_t ch : arg) {
+        if (ch == L'\\') {
+            ++backslashes;
+            continue;  // emitted once we know what follows
+        }
+        if (ch == L'"') {
+            // n backslashes + a quote -> 2n+1 backslashes then \".
+            out.append(backslashes * 2 + 1, L'\\');
+            out += L'"';
+        } else {
+            out.append(backslashes, L'\\');
+            out += ch;
+        }
+        backslashes = 0;
+    }
+    // Trailing backslashes sit in front of the closing quote: double them.
+    out.append(backslashes * 2, L'\\');
+    out += L'"';
+    return out;
+}
+
 std::wstring build_command_line(const std::vector<std::wstring>& args) {
     std::wstring cmd;
     for (size_t i = 0; i < args.size(); ++i) {
-        const std::wstring& arg = args[i];
-        const bool needs_quotes = arg.empty() ||
-                                  arg.find_first_of(L" \t\"") != std::wstring::npos;
-        if (needs_quotes) {
-            cmd += L'"';
-            for (const wchar_t ch : arg) {
-                if (ch == L'"') {
-                    cmd += L"\\\"";
-                } else {
-                    cmd += ch;
-                }
-            }
-            cmd += L'"';
-        } else {
-            cmd += arg;
-        }
-        if (i + 1 < args.size()) {
+        if (i > 0) {
             cmd += L' ';
         }
+        cmd += quote_windows_argument(args[i]);
     }
     return cmd;
 }
@@ -58,10 +76,11 @@ Result<LaunchedProcess> spawn_suspended(const std::filesystem::path& exe_path,
                                         const std::vector<std::wstring>& args,
                                         const std::filesystem::path& working_dir,
                                         DWORD priority_class) {
-    // argv[0] is conventionally the executable itself.
+    // argv[0] is conventionally the executable itself; quoting happens in
+    // build_command_line, never by pre-quoting tokens here.
     std::vector<std::wstring> full_args;
     full_args.reserve(args.size() + 1);
-    full_args.push_back(L"\"" + exe_path.wstring() + L"\"");
+    full_args.push_back(exe_path.wstring());
     full_args.insert(full_args.end(), args.begin(), args.end());
     std::wstring command_line = build_command_line(full_args);
 

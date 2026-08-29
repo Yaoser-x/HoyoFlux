@@ -4,6 +4,7 @@
 
 add_library(hoyoflux_game STATIC
   adapter.cpp
+  launch/launch_plan.cpp
   genshin/signatures.cpp
   genshin/genshin_adapter.cpp
   starrail/signatures.cpp
