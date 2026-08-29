@@ -12,6 +12,78 @@ namespace hoyoflux::game {
 
 GameId StarRailAdapter::id() const { return GameId::StarRail; }
 
+CapabilityReport StarRailAdapter::capabilities(const GameInstall& /*install*/,
+                                               const Profile& profile) const {
+    // Build facts, same contract as GenshinAdapter::capabilities: anything
+    // Unsupported stops a launch that requests it (validate_profile), so no
+    // configured feature can degrade into a silent no-op.
+    CapabilityReport report;
+    auto add = [&](Capability capability, CapabilityStatus status,
+                   std::string reason) {
+        report.entries.push_back({capability, status, std::move(reason)});
+    };
+
+    const bool drive_render = profile.render.resolution.has_value();
+    const FullscreenMode fullscreen = profile.render.fullscreen;
+
+    add(Capability::FpsUnlock, CapabilityStatus::Supported,
+        "fps variable write + mov flip (starrail.fps / starrail.fpsmovflip)");
+
+    add(Capability::DynamicFps, CapabilityStatus::Unsupported,
+        "in-game fps changes (hotkeys) are not implemented in this build");
+
+    add(Capability::CustomResolution,
+        drive_render ? CapabilityStatus::Supported : CapabilityStatus::NotRequired,
+        "-screen-width/-screen-height launch arguments (real-machine gate "
+        "pending: plan F1)");
+
+    CapabilityStatus fullscreen_status = CapabilityStatus::Unsupported;
+    std::string fullscreen_reason;
+    if (!drive_render) {
+        fullscreen_status = CapabilityStatus::NotRequired;
+    } else if (fullscreen == FullscreenMode::Windowed ||
+               fullscreen == FullscreenMode::Exclusive) {
+        fullscreen_status = CapabilityStatus::Supported;
+        fullscreen_reason = "-screen-fullscreen launch argument";
+    } else {
+        fullscreen_reason =
+            "borderless fullscreen cannot be set via Star Rail launch "
+            "arguments; use \"windowed\"/\"exclusive\" or set it in-game";
+    }
+    add(Capability::FullscreenMode, fullscreen_status, std::move(fullscreen_reason));
+
+    add(Capability::MonitorSelection,
+        profile.render.monitor.has_value() ? CapabilityStatus::Unsupported
+                                           : CapabilityStatus::NotRequired,
+        "monitor selection has no verified mechanism for Star Rail in this "
+        "build; remove \"monitor\" from the profile");
+
+    // The UISet signatures exist in the table but no PatchPlan builder
+    // applies them yet (plan F5); requesting mobile UI must stop.
+    add(Capability::MobileUi, CapabilityStatus::Unsupported,
+        "Mobile UI is not implemented for Star Rail in this build");
+
+    add(Capability::CustomDpi, CapabilityStatus::Unsupported,
+        "custom DPI has no mechanism for Star Rail in this build");
+
+    add(Capability::PowerSave,
+        profile.runtime.power_save == PowerSavePolicy::Enabled
+            ? CapabilityStatus::Unsupported
+            : CapabilityStatus::NotRequired,
+        "power-save throttling is not implemented in this build (plan F6); "
+        "launching with power_save enabled would silently do nothing");
+
+    add(Capability::PersistentStateGuard,
+        drive_render && profile.render.persistence == ResolutionPersistence::Session
+            ? CapabilityStatus::Unsupported
+            : CapabilityStatus::NotRequired,
+        "session-scoped resolution protection (persistent-state guard) is "
+        "not implemented in this build; the game may keep the custom "
+        "resolution after exit");
+
+    return report;
+}
+
 Result<GameInstall> StarRailAdapter::locate_installation(Region region) const {
     auto paths = win32::read_launcher_paths();
     if (!paths) {

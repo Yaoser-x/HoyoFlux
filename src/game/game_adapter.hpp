@@ -7,6 +7,7 @@
 // into a PatchPlan. It never writes memory itself; the patch engine (A6)
 // executes the plan.
 
+#include "domain/capability.hpp"
 #include "domain/error.hpp"
 #include "domain/game.hpp"
 #include "domain/patch_plan.hpp"
@@ -59,6 +60,13 @@ public:
 
     virtual GameId id() const = 0;
 
+    // Honest per-feature status for this install + profile. Features the
+    // profile does not use are reported NotRequired; the rest must be
+    // Supported or Unsupported (SignatureMissing is only produced once
+    // signatures have actually been resolved, e.g. by doctor).
+    virtual CapabilityReport capabilities(const GameInstall& install,
+                                          const Profile& profile) const = 0;
+
     // Locate the game executable (launcher registry). Region::Auto prefers
     // the CN install, falling back to Global.
     virtual Result<GameInstall> locate_installation(Region region) const = 0;
@@ -85,6 +93,14 @@ public:
 
 // Factory: the adapter for a game id.
 std::unique_ptr<GameAdapter> make_adapter(GameId game);
+
+// F0 gate: every profile feature the report marks Unsupported must be
+// unused by the profile. Returns an error naming the first violated
+// capability (its `reason` is the message body); a valid profile passes.
+// Called before the game process exists, so an unsupported feature stops
+// the launch instead of being silently ignored.
+[[nodiscard]] Result<void> validate_profile(const Profile& profile,
+                                            const CapabilityReport& report);
 
 // First resolved signature with this id, or nullptr.
 const ResolvedSignature* find_resolved(const std::vector<ResolvedSignature>& resolved,

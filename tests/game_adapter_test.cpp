@@ -464,3 +464,140 @@ TEST_CASE("starrail plan fails without the fps signature", "[game][starrail][pla
     REQUIRE_FALSE(plan.has_value());
     CHECK(plan.error().code == ErrorCode::SignatureNotFound);
 }
+
+// ---------------------------------------------------------------------------
+// F0 capability contract
+// ---------------------------------------------------------------------------
+
+TEST_CASE("every capability is reported by each adapter", "[game][capability]") {
+    const GameInstall genshin_install{GameId::Genshin, true, "YuanShen.exe"};
+    const GameInstall starrail_install{GameId::StarRail, true, "StarRail.exe"};
+    const Profile profile;
+
+    hoyoflux::game::GenshinAdapter genshin;
+    hoyoflux::game::StarRailAdapter starrail;
+    const std::pair<const hoyoflux::game::GameAdapter*, GameInstall> adapters[] = {
+        {&genshin, genshin_install},
+        {&starrail, starrail_install},
+    };
+
+    for (const auto& [adapter, install] : adapters) {
+        const auto report = adapter->capabilities(install, profile);
+        CAPTURE(to_string(adapter->id()));
+        for (int i = 0; i <= static_cast<int>(Capability::PersistentStateGuard);
+             ++i) {
+            const auto capability = static_cast<Capability>(i);
+            INFO("capability " << to_string(capability));
+            const auto* entry = report.find(capability);
+            REQUIRE(entry != nullptr);
+            // A status that blocks a launch must always carry its reason.
+            REQUIRE((entry->status != CapabilityStatus::Unsupported ||
+                     !entry->reason.empty()));
+        }
+    }
+}
+
+TEST_CASE("desktop-only profile validates against both adapters",
+          "[game][capability]") {
+    const GameInstall genshin_install{GameId::Genshin, true, "YuanShen.exe"};
+    const GameInstall starrail_install{GameId::StarRail, true, "StarRail.exe"};
+    const Profile profile;  // fps only; no render/ui extras
+
+    hoyoflux::game::GenshinAdapter genshin;
+    hoyoflux::game::StarRailAdapter starrail;
+    REQUIRE(game::validate_profile(profile,
+                                   genshin.capabilities(genshin_install, profile))
+                .has_value());
+    REQUIRE(game::validate_profile(profile,
+                                   starrail.capabilities(starrail_install, profile))
+                .has_value());
+}
+
+TEST_CASE("unsupported features stop validation with a reason",
+          "[game][capability]") {
+    const GameInstall genshin_install{GameId::Genshin, true, "YuanShen.exe"};
+    hoyoflux::game::GenshinAdapter adapter;
+
+    SECTION("mobile_ui is the plan's canonical example") {
+        Profile profile;
+        profile.ui.mobile_ui = true;
+        auto valid = game::validate_profile(
+            profile, adapter.capabilities(genshin_install, profile));
+        REQUIRE_FALSE(valid.has_value());
+        CHECK(valid.error().code == ErrorCode::NotSupported);
+        CHECK(valid.error().message ==
+              "Mobile UI is not implemented for Genshin in this build");
+    }
+
+    SECTION("monitor selection has no verified mechanism") {
+        Profile profile;
+        profile.render.monitor = 1;
+        auto valid = game::validate_profile(
+            profile, adapter.capabilities(genshin_install, profile));
+        REQUIRE_FALSE(valid.has_value());
+        CHECK(valid.error().code == ErrorCode::NotSupported);
+        CHECK(valid.error().message.find("monitor selection") !=
+              std::string::npos);
+    }
+
+    SECTION("power_save enabled would be a silent no-op today") {
+        Profile profile;
+        profile.runtime.power_save = PowerSavePolicy::Enabled;
+        auto valid = game::validate_profile(
+            profile, adapter.capabilities(genshin_install, profile));
+        REQUIRE_FALSE(valid.has_value());
+        CHECK(valid.error().code == ErrorCode::NotSupported);
+        CHECK(valid.error().message.find("power-save") != std::string::npos);
+    }
+
+    SECTION("session-scoped resolution requires the persistent-state guard") {
+        Profile profile;
+        profile.render.resolution = Resolution{1080, 1920};
+        profile.render.fullscreen = FullscreenMode::Windowed;
+        auto valid = game::validate_profile(
+            profile, adapter.capabilities(genshin_install, profile));
+        REQUIRE_FALSE(valid.has_value());
+        CHECK(valid.error().code == ErrorCode::NotSupported);
+        CHECK(valid.error().message.find("persistent-state guard") !=
+              std::string::npos);
+
+        // The user can opt out explicitly by accepting persistence.
+        profile.render.persistence = ResolutionPersistence::Persistent;
+        auto launched = game::validate_profile(
+            profile, adapter.capabilities(genshin_install, profile));
+        REQUIRE(launched.has_value());
+    }
+
+    SECTION("borderless cannot be promised via launch arguments") {
+        Profile profile;
+        profile.render.resolution = Resolution{2560, 1440};
+        profile.render.persistence = ResolutionPersistence::Persistent;
+        auto valid = game::validate_profile(
+            profile, adapter.capabilities(genshin_install, profile));
+        REQUIRE_FALSE(valid.has_value());
+        CHECK(valid.error().message.find("borderless") != std::string::npos);
+    }
+
+    SECTION("star rail has no dpi mechanism") {
+        const GameInstall starrail_install{GameId::StarRail, true,
+                                           "StarRail.exe"};
+        hoyoflux::game::StarRailAdapter starrail;
+        Profile profile;
+        profile.ui.dpi_scale = 1.5f;
+        auto valid = game::validate_profile(
+            profile, starrail.capabilities(starrail_install, profile));
+        REQUIRE_FALSE(valid.has_value());
+        CHECK(valid.error().message.find("Star Rail") != std::string::npos);
+    }
+}
+
+TEST_CASE("genshin custom dpi validates when supported", "[game][capability]") {
+    const GameInstall genshin_install{GameId::Genshin, true, "YuanShen.exe"};
+    hoyoflux::game::GenshinAdapter adapter;
+    Profile profile;
+    profile.ui.dpi_scale = 2.0f;
+    profile.render.persistence = ResolutionPersistence::Persistent;
+    auto valid = game::validate_profile(
+        profile, adapter.capabilities(genshin_install, profile));
+    REQUIRE(valid.has_value());
+}

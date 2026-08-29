@@ -40,6 +40,17 @@ public:
         : modules_(std::move(modules)) {}
 
     GameId id() const override { return GameId::Genshin; }
+    CapabilityReport capabilities(const GameInstall&,
+                                  const Profile&) const override {
+        // Permissive stub: every capability supported so validation passes.
+        CapabilityReport report;
+        for (int i = 0; i <= static_cast<int>(Capability::PersistentStateGuard);
+             ++i) {
+            report.entries.push_back({static_cast<Capability>(i),
+                                      CapabilityStatus::Supported, "stub"});
+        }
+        return report;
+    }
     Result<GameInstall> locate_installation(game::Region) const override {
         return GameInstall{GameId::Genshin, true, cmd_path()};
     }

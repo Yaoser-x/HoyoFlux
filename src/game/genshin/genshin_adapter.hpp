@@ -7,6 +7,8 @@ namespace hoyoflux::game {
 class GenshinAdapter final : public GameAdapter {
 public:
     GameId id() const override;
+    CapabilityReport capabilities(const GameInstall& install,
+                                  const Profile& profile) const override;
     Result<GameInstall> locate_installation(Region region) const override;
     Result<bool> is_old_version(const GameInstall& install) const override;
     Result<ModuleRequirements> module_requirements(

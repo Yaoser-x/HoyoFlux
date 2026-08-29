@@ -25,6 +25,87 @@ constexpr std::string_view kFpsIdsByPriority[] = {
 
 GameId GenshinAdapter::id() const { return GameId::Genshin; }
 
+CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
+                                              const Profile& profile) const {
+    // One entry per user-visible feature. Statuses here are build facts, not
+    // aspirations: anything marked Unsupported makes validate_profile stop
+    // the launch instead of running a silent no-op. Deferred items carry the
+    // phase that will implement them (1.0.0 plan F-phases).
+    CapabilityReport report;
+    auto add = [&](Capability capability, CapabilityStatus status,
+                   std::string reason) {
+        report.entries.push_back({capability, status, std::move(reason)});
+    };
+
+    const bool drive_render = profile.render.resolution.has_value();
+    const FullscreenMode fullscreen = profile.render.fullscreen;
+
+    add(Capability::FpsUnlock, CapabilityStatus::Supported,
+        "fps redirect patch (first resolved genshin.fps.* signature)");
+
+    add(Capability::DynamicFps, CapabilityStatus::Unsupported,
+        "in-game fps changes (hotkeys) are not implemented in this build");
+
+    add(Capability::CustomResolution,
+        drive_render ? CapabilityStatus::Supported : CapabilityStatus::NotRequired,
+        "-screen-width/-screen-height launch arguments (real-machine gate "
+        "pending: plan F1)");
+
+    // Borderless is not expressible through Unity launch arguments for
+    // Genshin; only windowed (0) and the game's fullscreen (1) are honest
+    // mappings. Borderless becomes available again via the persistent-state
+    // path (plan F2/F3) or by setting it in-game once.
+    CapabilityStatus fullscreen_status = CapabilityStatus::Unsupported;
+    std::string fullscreen_reason;
+    if (!drive_render) {
+        fullscreen_status = CapabilityStatus::NotRequired;
+    } else if (fullscreen == FullscreenMode::Windowed ||
+               fullscreen == FullscreenMode::Exclusive) {
+        fullscreen_status = CapabilityStatus::Supported;
+        fullscreen_reason = "-screen-fullscreen launch argument";
+    } else {
+        fullscreen_reason =
+            "borderless fullscreen cannot be set via Genshin launch "
+            "arguments; use \"windowed\"/\"exclusive\" or set it in-game";
+    }
+    add(Capability::FullscreenMode, fullscreen_status, std::move(fullscreen_reason));
+
+    // Plan F1 §3.5: no monitor-selection mechanism has been verified on a
+    // real machine, so requesting one must stop the launch.
+    add(Capability::MonitorSelection,
+        profile.render.monitor.has_value() ? CapabilityStatus::Unsupported
+                                           : CapabilityStatus::NotRequired,
+        "monitor selection has no verified mechanism for Genshin in this "
+        "build; remove \"monitor\" from the profile");
+
+    add(Capability::MobileUi, CapabilityStatus::Unsupported,
+        "Mobile UI is not implemented for Genshin in this build");
+
+    add(Capability::CustomDpi,
+        profile.ui.dpi_scale.has_value() ? CapabilityStatus::Supported
+                                         : CapabilityStatus::NotRequired,
+        "GetDPI prologue replacement patch (genshin.dpi)");
+
+    add(Capability::PowerSave,
+        profile.runtime.power_save == PowerSavePolicy::Enabled
+            ? CapabilityStatus::Unsupported
+            : CapabilityStatus::NotRequired,
+        "power-save throttling is not implemented in this build (plan F6); "
+        "launching with power_save enabled would silently do nothing");
+
+    // Until the game's persistent resolution storage is snapshotted and
+    // guarded (plan F2/F3), a session-scoped resolution cannot be promised.
+    add(Capability::PersistentStateGuard,
+        drive_render && profile.render.persistence == ResolutionPersistence::Session
+            ? CapabilityStatus::Unsupported
+            : CapabilityStatus::NotRequired,
+        "session-scoped resolution protection (persistent-state guard) is "
+        "not implemented in this build; the game may keep the custom "
+        "resolution after exit");
+
+    return report;
+}
+
 Result<GameInstall> GenshinAdapter::locate_installation(Region region) const {
     auto paths = win32::read_launcher_paths();
     if (!paths) {

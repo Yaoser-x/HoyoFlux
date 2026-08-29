@@ -101,6 +101,14 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     if (!requirements) {
         return std::unexpected(requirements.error());
     }
+    // F0 gate: a profile feature the adapter cannot honor stops the launch
+    // here - before the game process, journal or patches exist.
+    if (auto valid = game::validate_profile(request.profile,
+                                            adapter_.capabilities(*install,
+                                                                  request.profile));
+        !valid) {
+        return std::unexpected(valid.error());
+    }
 
     ActiveSessionJournal journal;
     journal.session_id = context.id;
