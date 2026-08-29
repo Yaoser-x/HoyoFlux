@@ -53,9 +53,25 @@ Result<AppliedOperation> apply_one(const win32::UniqueHandle& process,
         if (auto read = read_bytes(process, op.address, record.original); !read) {
             return std::unexpected(read.error());
         }
+        if (!op.expected_original.empty() &&
+            (record.original.size() != op.expected_original.size() ||
+             !std::equal(op.expected_original.begin(),
+                         op.expected_original.end(),
+                         record.original.begin()))) {
+            return std::unexpected(Error::make(
+                ErrorCode::PatchFailed,
+                "expected-bytes mismatch at " + std::to_string(op.address) +
+                    ": the target does not look like the pattern this patch "
+                    "was built for; refusing to write"));
+        }
         if (auto wrote = write_protected(process, op.address, op.data); !wrote) {
             return std::unexpected(wrote.error());
         }
+        // Code pages may be cached: flush so the game never executes stale
+        // bytes (plan 19.1).
+        FlushInstructionCache(process.get(),
+                              reinterpret_cast<LPCVOID>(op.address),
+                              op.data.size());
         break;
 
     case PatchOperationKind::RedirectRelative: {

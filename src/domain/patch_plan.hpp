@@ -59,26 +59,45 @@ struct PatchOperation {
     PatchOperationKind kind{PatchOperationKind::WriteBytes};
     uintptr_t address{0};
     std::vector<std::byte> data;  // WriteBytes / InstallCodeStub payload
+
+    // F10: when non-empty, the engine reads the remote bytes first and
+    // refuses to patch unless they match exactly. A signature that matched
+    // by coincidence then fails loudly instead of corrupting memory.
+    std::vector<std::byte> expected_original;
+
     PatchTargetSymbol target_symbol{PatchTargetSymbol::Absolute};
     uintptr_t target_address{0};  // RedirectRelative when symbol == Absolute
     uint32_t stub_index{0};       // InvokeBootstrap: index of installed stub
     uint32_t wait_timeout_ms{5000};  // InvokeBootstrap
 
-    [[nodiscard]] static PatchOperation write_bytes(uintptr_t address,
-                                                    std::span<const std::byte> bytes) {
-        return PatchOperation{PatchOperationKind::WriteBytes, address,
-                              {bytes.begin(), bytes.end()}};
+    [[nodiscard]] static PatchOperation write_bytes(
+        uintptr_t address, std::span<const std::byte> bytes,
+        std::span<const std::byte> expected = {}) {
+        PatchOperation op;
+        op.kind = PatchOperationKind::WriteBytes;
+        op.address = address;
+        op.data.assign(bytes.begin(), bytes.end());
+        op.expected_original.assign(expected.begin(), expected.end());
+        return op;
     }
     [[nodiscard]] static PatchOperation write_u32(uintptr_t address, uint32_t value) {
         std::vector<std::byte> bytes(sizeof(value));
         std::memcpy(bytes.data(), &value, sizeof(value));
-        return PatchOperation{PatchOperationKind::WriteBytes, address, std::move(bytes)};
+        PatchOperation op;
+        op.kind = PatchOperationKind::WriteBytes;
+        op.address = address;
+        op.data = std::move(bytes);
+        return op;
     }
     [[nodiscard]] static PatchOperation redirect_relative(uintptr_t disp_field,
                                                           PatchTargetSymbol symbol,
                                                           uintptr_t target) {
-        return PatchOperation{PatchOperationKind::RedirectRelative, disp_field, {},
-                              symbol, target};
+        PatchOperation op;
+        op.kind = PatchOperationKind::RedirectRelative;
+        op.address = disp_field;
+        op.target_symbol = symbol;
+        op.target_address = target;
+        return op;
     }
     [[nodiscard]] static PatchOperation install_code_stub(
         std::vector<std::byte> code) {

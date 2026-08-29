@@ -189,9 +189,13 @@ Result<PatchPlan> StarRailAdapter::build_patch_plan(const PatchContext& context)
     if (const ResolvedSignature* flip =
             find_resolved(context.resolved, "starrail.fpsmovflip")) {
         if (flip->fields[0] == fps->fields[0]) {
+            // The pattern "CC 89 0D ..." fixes the byte at the flip site:
+            // carry it as an expectation so a coincidental match elsewhere
+            // fails loudly instead of corrupting the game (plan F10).
             const std::array<std::byte, 1> flip_opcode{std::byte{0x8B}};
-            plan.operations.push_back(
-                PatchOperation::write_bytes(flip->fields[1], flip_opcode));
+            const std::array<std::byte, 1> expected{std::byte{0x89}};
+            plan.operations.push_back(PatchOperation::write_bytes(
+                flip->fields[1], flip_opcode, expected));
         }
     }
 

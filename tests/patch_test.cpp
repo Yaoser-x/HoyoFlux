@@ -321,3 +321,46 @@ TEST_CASE("engine installs and invokes a bootstrap stub, rollback frees it",
     REQUIRE(patch::rollback_patch_plan(process, *applied).has_value());
     CHECK(applied->stubs.empty());
 }
+
+TEST_CASE("expected_original verification guards against false matches (F10)",
+          "[patch][engine][f10]") {
+    const auto process = self_process();
+    auto buffer = WindowBuffer::filled();
+    const auto original = buffer.raw;
+
+    // Expectation matches: the patch applies and rollback restores it.
+    const std::array<std::byte, 4> pattern{std::byte{0x22}, std::byte{0x22},
+                                           std::byte{0x22}, std::byte{0x22}};
+    const std::array<std::byte, 4> payload{std::byte{0xAA}, std::byte{0xBB},
+                                           std::byte{0xCC}, std::byte{0xDD}};
+    PatchPlan ok_plan;
+    ok_plan.operations.push_back(PatchOperation::write_bytes(
+        reinterpret_cast<uintptr_t>(buffer.raw.data()) + 12, payload, pattern));
+
+    auto applied = patch::apply_patch_plan(process, ok_plan);
+    REQUIRE(applied.has_value());
+    CHECK(buffer.raw[12] == std::byte{0xAA});
+    REQUIRE(patch::rollback_patch_plan(process, *applied).has_value());
+    CHECK(buffer.raw == original);
+
+    // Expectation does not match: the patch refuses and nothing changed.
+    const std::array<std::byte, 4> wrong{std::byte{0x00}, std::byte{0x00},
+                                         std::byte{0x00}, std::byte{0x00}};
+    PatchPlan bad_plan;
+    bad_plan.operations.push_back(PatchOperation::write_bytes(
+        reinterpret_cast<uintptr_t>(buffer.raw.data()) + 12, payload, wrong));
+    auto failed = patch::apply_patch_plan(process, bad_plan);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().message.find("expected-bytes mismatch") !=
+          std::string::npos);
+    CHECK(buffer.raw == original);
+
+    // Shorter expectation than the payload is also a mismatch, not a skip.
+    const std::array<std::byte, 1> tiny{std::byte{0x22}};
+    PatchPlan tiny_plan;
+    tiny_plan.operations.push_back(PatchOperation::write_bytes(
+        reinterpret_cast<uintptr_t>(buffer.raw.data()) + 12, payload, tiny));
+    auto short_failed = patch::apply_patch_plan(process, tiny_plan);
+    REQUIRE_FALSE(short_failed.has_value());
+    CHECK(buffer.raw == original);
+}
