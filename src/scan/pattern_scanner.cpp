@@ -21,12 +21,15 @@ unsigned ctz32(uint32_t v) {
 #endif
 }
 
-// Push every offset in [begin, end) at which `region[off] == needle`.
+// Call fn(offset) for every offset in [begin, end) at which
+// `region[off] == needle`, in increasing order; fn returning true stops the
+// sweep early (scan_first never materializes a candidate list - plan 20.1).
 // Bulk of the work runs as SSE2 16-byte compares; the tail is scalar. Only
 // full 16-byte chunks fully inside [begin, end) are read, so no byte past the
 // region is ever touched.
-void find_byte_candidates(const byte* region, size_t begin, size_t end, byte needle,
-                          std::vector<size_t>& out) {
+template <typename Fn>
+bool for_each_byte_hit(const byte* region, size_t begin, size_t end, byte needle,
+                       Fn&& fn) {
     const __m128i needle_v = _mm_set1_epi8(static_cast<char>(needle));
     size_t i = begin;
     while (i + 16 <= end) {
@@ -36,16 +39,21 @@ void find_byte_candidates(const byte* region, size_t begin, size_t end, byte nee
             _mm_movemask_epi8(_mm_cmpeq_epi8(chunk, needle_v)));
         while (mask != 0) {
             const unsigned bit = ctz32(mask);
-            out.push_back(i + bit);
+            if (fn(i + bit)) {
+                return true;
+            }
             mask &= mask - 1;
         }
         i += 16;
     }
     for (; i < end; ++i) {
         if (region[i] == needle) {
-            out.push_back(i);
+            if (fn(i)) {
+                return true;
+            }
         }
     }
+    return false;
 }
 
 // Verify region[pos..pos+count) against pattern[pat..pat+count), honoring
@@ -98,15 +106,14 @@ std::vector<size_t> scan_all(const CompiledPattern& pattern,
 
     // Window in which the anchor's first byte can appear: region[pos+anchor]
     // for pos in [0, last]  =>  offsets [anchor, last+anchor+1).
-    std::vector<size_t> candidates;
-    find_byte_candidates(base, anchor, last + anchor + 1,
-                         pattern_bytes[anchor], candidates);
-    for (const size_t candidate : candidates) {
-        const size_t pos = candidate - anchor;
-        if (is_match_at(pattern, base, pos)) {
-            matches.push_back(pos);
-        }
-    }
+    (void)for_each_byte_hit(base, anchor, last + anchor + 1,
+                            pattern_bytes[anchor], [&](size_t candidate) {
+                                const size_t pos = candidate - anchor;
+                                if (is_match_at(pattern, base, pos)) {
+                                    matches.push_back(pos);
+                                }
+                                return false;
+                            });
     return matches;
 }
 
@@ -123,16 +130,17 @@ std::optional<size_t> scan_first(const CompiledPattern& pattern,
     const size_t anchor = pattern.anchor_index;
     const size_t last = region_len - pattern_len;
 
-    std::vector<size_t> candidates;
-    find_byte_candidates(base, anchor, last + anchor + 1,
-                         pattern_bytes[anchor], candidates);
-    for (const size_t candidate : candidates) {
-        const size_t pos = candidate - anchor;
-        if (is_match_at(pattern, base, pos)) {
-            return pos;
-        }
-    }
-    return std::nullopt;
+    std::optional<size_t> found;
+    for_each_byte_hit(base, anchor, last + anchor + 1, pattern_bytes[anchor],
+                      [&](size_t candidate) {
+                          const size_t pos = candidate - anchor;
+                          if (is_match_at(pattern, base, pos)) {
+                              found = pos;
+                              return true;  // verified: stop the sweep
+                          }
+                          return false;
+                      });
+    return found;
 }
 
 }  // namespace hoyoflux::scan
