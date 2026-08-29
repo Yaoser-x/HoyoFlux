@@ -1,0 +1,60 @@
+# Release pipeline (plan §28): a v-tag triggers build + test + package +
+# SHA256 + GitHub release artifact. The version string itself comes from the
+# CMake single source (HOYOFLUX_PRERELEASE must be cleared for a final).
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build, test and package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install llvm-mingw toolchain
+        run: |
+          $tag = "20250521"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$tag/llvm-mingw-$tag-ucrt-windows-x86_64.zip"
+          Invoke-WebRequest -Uri $url -OutFile llvm-mingw.zip
+          Expand-Archive -Path llvm-mingw.zip -DestinationPath C:\tools
+          "C:\tools\llvm-mingw-$tag-ucrt-windows-x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure (release)
+        run: cmake --preset release
+
+      - name: Build (release)
+        run: cmake --build --preset release
+
+      - name: Test (release)
+        run: ctest --preset release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = git describe --tags --always
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item build/release/src/app/hoyoflux.exe "dist/hoyoflux-$version.exe"
+          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md, docs/compatibility-matrix.md dist/
+          $hash = (Get-FileHash "dist/hoyoflux-$version.exe" -Algorithm SHA256).Hash
+          "$hash  hoyoflux-$version.exe" | Out-File -Encoding ascii "dist/SHA256SUMS.txt"
+          Compress-Archive -Path dist/* -DestinationPath "dist/hoyoflux-$version-windows-x64.zip"
+
+      - name: Publish release
+        shell: pwsh
+        run: |
+          $version = git describe --tags --always
+          gh release create "$env:GITHUB_REF_NAME" `
+            "dist/hoyoflux-$version-windows-x64.zip" `
+            "dist/SHA256SUMS.txt" `
+            --title "HoyoFlux $version" `
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
