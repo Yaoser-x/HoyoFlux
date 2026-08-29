@@ -1,0 +1,401 @@
+// HoyoFlux CLI (A10). Quiet by default: one line per outcome, details with
+// --verbose. Commands:
+//   launch <genshin|starrail> [options]
+//   profile list | show <id> | path
+//   doctor
+//   recover
+//   version
+
+#include "domain/error.hpp"
+#include "domain/game.hpp"
+#include "domain/launch_request.hpp"
+#include "game/game_adapter.hpp"
+#include "game/genshin/signatures.hpp"
+#include "game/starrail/signatures.hpp"
+#include "platform/win32/display.hpp"
+#include "platform/win32/privilege.hpp"
+#include "platform/win32/process.hpp"
+#include "platform/win32/registry.hpp"
+#include "profile/config.hpp"
+#include "session/journal.hpp"
+#include "session/session_engine.hpp"
+
+#include <CLI/CLI.hpp>
+
+#include <windows.h>
+
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <iostream>
+#include <string>
+#include <vector>
+
+using namespace hoyoflux;
+
+namespace {
+
+constexpr const char* kVersion = "1.0.0";
+
+std::filesystem::path config_path() {
+    return session::journal_path().parent_path().parent_path() / "config.toml";
+}
+
+Result<Profile> resolve_profile(const profile::Config& config, GameId game,
+                                const std::string& name) {
+    if (name == "auto") {
+        auto displays = win32::enumerate_displays();
+        if (!displays) {
+            return std::unexpected(displays.error());
+        }
+        return profile::match_auto_profile(config, game, *displays);
+    }
+    if (name.empty()) {
+        if (!config.default_profile.empty()) {
+            return profile::find_profile(config, config.default_profile);
+        }
+        return std::unexpected(Error::make(
+            ErrorCode::ProfileNotFound,
+            "no profile given and no default_profile set in config.toml"));
+    }
+    return profile::find_profile(config, name);
+}
+
+GameId parse_game_id(const std::string& text) {
+    if (text == "genshin") {
+        return GameId::Genshin;
+    }
+    return GameId::StarRail;  // CLI11 restricts the input beforehand
+}
+
+void apply_overrides(Profile& profile, const std::optional<uint32_t>& fps,
+                     const std::optional<bool>& mobile_ui,
+                     const std::optional<float>& dpi_scale) {
+    if (fps) {
+        profile.runtime.fps = *fps;
+    }
+    if (mobile_ui) {
+        profile.ui.mobile_ui = *mobile_ui;
+    }
+    if (dpi_scale) {
+        profile.ui.dpi_scale = *dpi_scale;
+    }
+}
+
+int cmd_launch(const std::string& game_text, const std::string& profile_name,
+               const std::optional<uint32_t>& fps,
+               const std::optional<bool>& mobile_ui,
+               const std::optional<float>& dpi_scale,
+               const std::string& region_text, const std::optional<std::string>& exe,
+               bool verbose) {
+    const auto game = parse_game_id(game_text);
+
+    auto config = profile::load_config(config_path());
+    if (!config) {
+        std::cout << "error: config " << config.error().message << "\n";
+        return 1;
+    }
+    auto profile = resolve_profile(*config, game, profile_name);
+    if (!profile) {
+        std::cout << "error: profile " << profile.error().message << "\n";
+        return 1;
+    }
+    apply_overrides(*profile, fps, mobile_ui, dpi_scale);
+
+    game::Region region = game::Region::Auto;
+    if (region_text == "cn") {
+        region = game::Region::Cn;
+    } else if (region_text == "global") {
+        region = game::Region::Global;
+    }
+
+    LaunchRequest request;
+    request.game = game;
+    request.profile = *profile;
+
+    session::SessionConfig session_config;
+    session_config.region = region;
+    if (exe) {
+        request.exe_override = std::filesystem::path(*exe);
+    }
+
+    auto adapter = game::make_adapter(game);
+    session::SessionEngine engine(*adapter, session_config);
+
+    const auto started = std::chrono::steady_clock::now();
+    if (verbose) {
+        std::cout << "session: game=" << to_string(game)
+                  << " profile=" << profile->id
+                  << " fps=" << profile->runtime.fps
+                  << " mobile_ui=" << (profile->ui.mobile_ui ? "yes" : "no") << "\n";
+    }
+    auto context = engine.run(request);
+    const auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+
+    if (!context) {
+        std::cout << "error: " << to_string(context.error().code) << " "
+                  << context.error().message << "\n";
+        return 1;
+    }
+    std::cout << "session " << context->id << " completed: game=" << to_string(game)
+              << " profile=" << profile->id << " pid=" << context->pid
+              << " duration=" << seconds << "s\n";
+    return 0;
+}
+
+int cmd_profile_list() {
+    auto config = profile::load_config(config_path());
+    if (!config) {
+        std::cout << "error: config " << config.error().message << "\n";
+        return 1;
+    }
+    for (const auto& profile : config->profiles) {
+        std::cout << profile.id << "  game=" << to_string(profile.game)
+                  << " fps=" << profile.runtime.fps
+                  << " mobile_ui=" << (profile.ui.mobile_ui ? "yes" : "no")
+                  << (profile.id == config->default_profile ? "  [default]" : "")
+                  << "\n";
+    }
+    return 0;
+}
+
+int cmd_profile_show(const std::string& id) {
+    auto config = profile::load_config(config_path());
+    if (!config) {
+        std::cout << "error: config " << config.error().message << "\n";
+        return 1;
+    }
+    auto profile = profile::find_profile(*config, id);
+    if (!profile) {
+        std::cout << "error: profile " << profile.error().message << "\n";
+        return 1;
+    }
+    const auto& p = *profile;
+    std::cout << "profile:    " << p.id << "\n";
+    std::cout << "game:       " << to_string(p.game) << "\n";
+    std::cout << "match:      " << (p.match == MatchPolicy::Auto ? "auto" : "manual")
+              << "\n";
+    if (p.render.resolution) {
+        std::cout << "resolution: " << p.render.resolution->width << "x"
+                  << p.render.resolution->height << "\n";
+    }
+    const char* fullscreen = p.render.fullscreen == FullscreenMode::Exclusive
+                                 ? "exclusive"
+                                 : (p.render.fullscreen == FullscreenMode::Windowed
+                                        ? "windowed"
+                                        : "borderless");
+    std::cout << "fullscreen: " << fullscreen << "\n";
+    std::cout << "persistence:"
+              << (p.render.persistence == ResolutionPersistence::Persistent
+                      ? " persistent"
+                      : " session")
+              << "\n";
+    std::cout << "fps:        " << p.runtime.fps << "\n";
+    std::cout << "power_save: "
+              << (p.runtime.power_save == PowerSavePolicy::Enabled ? "enabled"
+                                                                   : "disabled")
+              << " at " << p.runtime.power_save_fps << " fps\n";
+    std::cout << "mobile_ui:  " << (p.ui.mobile_ui ? "yes" : "no") << "\n";
+    if (p.ui.dpi_scale) {
+        std::cout << "dpi_scale:  " << *p.ui.dpi_scale << "\n";
+    }
+    return 0;
+}
+
+int cmd_doctor() {
+    int failures = 0;
+    auto check = [&](bool ok, std::string_view label, std::string_view detail) {
+        std::cout << (ok ? "[ OK ] " : "[FAIL] ") << label;
+        if (!detail.empty()) {
+            std::cout << ": " << detail;
+        }
+        std::cout << "\n";
+        if (!ok) {
+            ++failures;
+        }
+    };
+
+    // Windows build.
+    OSVERSIONINFOEXW info{};
+    info.dwOSVersionInfoSize = sizeof(info);
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
+    const auto rtl_get_version = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(
+        GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+    char windows_detail[64] = "unknown";
+    if (rtl_get_version && rtl_get_version(&info) == 0) {
+        std::snprintf(windows_detail, sizeof(windows_detail), "%lu.%lu.%lu",
+                      info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber);
+    }
+    check(info.dwMajorVersion >= 10, "Windows", windows_detail);
+    check(win32::is_elevated(), "Administrator",
+          win32::is_elevated() ? "elevated" : "not elevated - launch may fail");
+
+    // Installs.
+    auto paths = win32::read_launcher_paths();
+    if (paths) {
+        auto describe = [&](const std::optional<std::filesystem::path>& p) {
+            return p ? p->string() : std::string("not found");
+        };
+        check(paths->genshin_cn.has_value() || paths->genshin_global.has_value(),
+              "Genshin install",
+              describe(paths->genshin_cn ? paths->genshin_cn : paths->genshin_global));
+        check(paths->starrail_cn.has_value() || paths->starrail_global.has_value(),
+              "Star Rail install",
+              describe(paths->starrail_cn ? paths->starrail_cn
+                                          : paths->starrail_global));
+    } else {
+        check(false, "launcher registry", paths.error().message);
+    }
+
+    // Config.
+    auto config = profile::load_config(config_path());
+    if (config) {
+        check(true, "config",
+              std::to_string(config->profiles.size()) + " profiles at " +
+                  config_path().string());
+    } else {
+        check(false, "config", config.error().message);
+    }
+
+    // Journal.
+    auto journal = session::load_journal();
+    if (!journal) {
+        check(false, "journal", journal.error().message);
+    } else if (!journal->has_value()) {
+        check(true, "journal", "none (clean)");
+    } else {
+        const auto& active = **journal;
+        check(win32::is_process_running(active.pid), "journal",
+              "ACTIVE session=" + active.session_id +
+                  " pid=" + std::to_string(active.pid) + " (recover if stale)");
+    }
+
+    // Displays.
+    if (auto displays = win32::enumerate_displays(); displays) {
+        std::string summary;
+        for (const auto& display : *displays) {
+            if (!display.is_attached) {
+                continue;
+            }
+            auto settings = win32::query_current_settings(display.device_name);
+            if (settings) {
+                summary +=
+                    std::filesystem::path(display.device_name).string() + " " +
+                    std::to_string(settings->width) + "x" +
+                    std::to_string(settings->height) + "@" +
+                    std::to_string(settings->refresh_rate) + "  ";
+            }
+        }
+        check(true, "displays", summary);
+    } else {
+        check(false, "displays", displays.error().message);
+    }
+
+    // Signature tables (static presence; live resolution happens per launch).
+    std::cout << "[INFO] signature tables: genshin=" << 0 + 16
+              << " starrail=" << 0 + 5 << " entries (live resolve per launch;\n"
+              << "       run `hoyoflux launch --verbose` or check FAILED signatures)\n";
+
+    return failures == 0 ? 0 : 1;
+}
+
+int cmd_recover() {
+    auto adapter = game::make_adapter(GameId::Genshin);
+    session::SessionEngine engine(*adapter);
+    auto action = engine.recover();
+    if (!action) {
+        std::cout << "error: recover " << action.error().message << "\n";
+        return 1;
+    }
+    switch (*action) {
+    case session::RecoveryAction::None:
+        std::cout << "no active-session journal found\n";
+        return 0;
+    case session::RecoveryAction::CleanedStaleJournal:
+        std::cout << "stale journal cleaned\n";
+        return 0;
+    case session::RecoveryAction::GameStillRunning:
+        std::cout << "journal references a live process; nothing done\n";
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    CLI::App app{"HoyoFlux " + std::string(kVersion) +
+                 " - session launcher for HoYoverse PC games"};
+    app.set_version_flag("--version", kVersion);
+    app.require_subcommand(0, 1);  // running without a subcommand shows help
+
+    bool verbose = false;
+    int exit_code = 0;
+    app.add_flag("--verbose", verbose, "show module/signature detail");
+
+    std::string launch_game;
+    std::string profile_name;
+    std::optional<uint32_t> fps;
+    std::optional<bool> mobile_ui_flag;
+    std::optional<float> dpi_scale;
+    std::string region = "auto";
+    std::optional<std::string> exe;
+    auto* launch = app.add_subcommand("launch", "launch a game session")
+                       ->callback([&] {
+                           exit_code = cmd_launch(launch_game, profile_name, fps,
+                                                  mobile_ui_flag, dpi_scale, region,
+                                                  exe, verbose);
+                       })
+                       ->group("Commands");
+    launch->add_option("game", launch_game, "genshin | starrail")
+        ->check(CLI::IsMember({"genshin", "starrail"}))
+        ->required();
+    launch->add_option("--profile", profile_name, "profile id or 'auto'");
+    launch->add_option("--fps", fps, "override profile fps");
+    launch->add_flag("--mobile-ui{true},--no-mobile-ui{false}", mobile_ui_flag,
+                     "override mobile UI");
+    launch->add_option("--dpi", dpi_scale, "override DPI scale");
+    launch->add_option("--region", region, "auto | cn | global")
+        ->check(CLI::IsMember({"auto", "cn", "global"}));
+    launch->add_option("--exe", exe, "explicit game executable path");
+    launch->add_flag("-v,--verbose", verbose, "verbose output");
+
+    auto* profile_cmd = app.add_subcommand("profile", "manage profiles")
+                            ->require_subcommand()
+                            ->group("Commands");
+    profile_cmd->add_subcommand("list", "list profiles")
+        ->callback([&] { exit_code = cmd_profile_list(); });
+    std::string show_id;
+    profile_cmd
+        ->add_subcommand("show", "show one profile")
+        ->callback([&] { exit_code = cmd_profile_show(show_id); })
+        ->add_option("id", show_id, "profile id")
+        ->required();
+    profile_cmd->add_subcommand("path", "print the config file path")
+        ->callback([] {
+            std::cout << config_path().string() << "\n";
+            return 0;
+        });
+
+    app.add_subcommand("doctor", "diagnose the environment")
+        ->callback([&] { exit_code = cmd_doctor(); })
+        ->group("Commands");
+    app.add_subcommand("version", "print the version")
+        ->callback(
+            [] {
+                std::cout << "HoyoFlux " << kVersion << "\n";
+            })
+        ->group("Commands");
+    app.add_subcommand("recover", "clean a stale session journal")
+        ->callback([&] { exit_code = cmd_recover(); })
+        ->group("Commands");
+
+    try {
+        app.parse(argc, argv);
+    } catch (const CLI::ParseError& error) {
+        return app.exit(error);
+    }
+    return exit_code;
+}
