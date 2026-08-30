@@ -12,7 +12,7 @@ automated suite alone proves the mechanism, not the in-game result.
 | FPS unlock (Genshin)      | sig redirect + sync thread | rip-relative redirect at RemoteState slot | parity | mechanism tested / B1 pending |
 | FPS unlock (Star Rail)    | direct variable write    | direct variable write + mov flip | parity | mechanism tested / B1 pending |
 | Custom DPI (Genshin)      | GetDPI prologue replacement | same patch, same prologue bytes | parity | mechanism tested / B1 pending |
-| Mobile UI (Genshin)       | in-process il2cpp calls  | code stub + remote invocation | parity in mechanism | payload gated (B1) |
+| Mobile UI (Genshin)       | lifecycle function-entry hook + in-process il2cpp calls | self-unhooking function-entry detour; original lifecycle resume; game-thread UI/Input setters | parity in mechanism | payload gated (B1) |
 | Mobile UI (Star Rail)     | in-process il2cpp calls  | code stub + remote invocation | parity in mechanism | payload gated (B1) |
 | Launch argument rendering | -screen-width/height     | same verified subset only | parity        | B1 pending      |
 | Install detection         | launcher registry walk   | launcher registry walk (channel subkeys opened properly) | parity + bugfix | tested (registry) |

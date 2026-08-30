@@ -280,10 +280,10 @@ game = "genshin"
 
 [profiles.ipad.match]
 auto_select = true
-portrait = true
+resolution = "2266x1488"
 
 [profiles.ipad.render]
-resolution = "1080x1920"
+resolution = "2266x1488"
 persistence = "session"
 
 [profiles.ipad.runtime]

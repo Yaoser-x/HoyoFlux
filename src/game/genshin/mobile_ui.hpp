@@ -1,7 +1,7 @@
 #pragma once
 
 // GenshinMobileUiPatchBuilder (F5, plan section 11.3): composes the in-game
-// Mobile UI bootstrap from the resolved mobile-UI signatures. Per-game by
+// Mobile UI function-entry stub from the resolved mobile-UI signatures. Per-game by
 // design - no cross-game branching.
 //
 // The generated stub is reached from the upstream lifecycle function entry.
@@ -30,7 +30,7 @@ public:
     [[nodiscard]] static Result<void> add_operations(PatchPlan& plan,
                                                      const PatchContext& context);
 
-    // The bootstrap machine code for the resolved signatures (exposed for
+    // The function-entry machine code for the resolved signatures (exposed for
     // tests and for the real-game validation tooling).
     [[nodiscard]] static std::vector<std::byte>
     build_stub(const std::vector<ResolvedSignature>& resolved);

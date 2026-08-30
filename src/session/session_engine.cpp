@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -468,63 +469,79 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         }
     }
 
-    if (plan->mobile_ui_diagnostic.has_value()) {
-        const DWORD startup_wait =
-            WaitForSingleObject(launched->process.get(), 5000);
-        if (startup_wait == WAIT_TIMEOUT) {
-            const auto detour = std::find_if(
-                applied.operations.begin(), applied.operations.end(),
-                [](const auto& operation) {
-                    return operation.op.kind ==
-                           PatchOperationKind::InstallFunctionEntryDetour;
-                });
-            if (detour != applied.operations.end() &&
-                detour->allocated_base != 0) {
-                MobileUiTelemetry telemetry;
-                std::span bytes(reinterpret_cast<std::byte*>(&telemetry),
-                                sizeof(telemetry));
-                const uintptr_t address =
-                    detour->allocated_base +
-                    plan->mobile_ui_diagnostic->telemetry_offset;
-                auto read = patch::read_bytes(launched->process, address, bytes);
-                if (config_.verbose) {
-                    if (read) {
-                        const auto yes_no = [](uint32_t value) {
-                            return value != 0 ? "yes" : "no";
-                        };
-                        std::cout
-                            << "mobile-ui runtime:\n"
-                            << "  function-entry-hits "
-                            << telemetry.function_entry_hits << "\n"
-                            << "  graph-ready       "
-                            << yes_no(telemetry.graph_ready) << "\n"
-                            << "  ui-ready          "
-                            << yes_no(telemetry.ui_ready) << "\n"
-                            << "  input-ready       "
-                            << yes_no(telemetry.input_ready) << "\n"
-                            << "  gui-set-called    "
-                            << yes_no(telemetry.gui_set_called) << "\n"
-                            << "  input-set-called  "
-                            << yes_no(telemetry.input_set_called) << "\n"
-                            << "  self-unhooked     "
-                            << yes_no(telemetry.self_unhooked) << "\n"
-                            << "  original-resumed  "
-                            << yes_no(telemetry.original_resumed) << "\n"
-                            << "  completed         "
-                            << yes_no(telemetry.completed) << "\n";
-                    } else {
-                        std::cout << "mobile-ui runtime: telemetry read failed: "
-                                  << read.error().message << "\n";
-                    }
+#if defined(HOYOFLUX_EXPERIMENTAL_MOBILE_UI)
+    // B1 validation only: production builds compile out this polling loop.
+    // Verbose experimental sessions sample once per second, emit only state
+    // transitions, and stop as soon as the upstream-parity stub completes.
+    if (config_.verbose && plan->mobile_ui_diagnostic.has_value()) {
+        const auto detour = std::find_if(
+            applied.operations.begin(), applied.operations.end(),
+            [](const auto& operation) {
+                return operation.op.kind ==
+                       PatchOperationKind::InstallFunctionEntryDetour;
+            });
+        if (detour != applied.operations.end() && detour->allocated_base != 0) {
+            const uintptr_t telemetry_address =
+                detour->allocated_base +
+                plan->mobile_ui_diagnostic->telemetry_offset;
+            MobileUiTelemetry previous{};
+            for (uint32_t sample = 0; sample < 60; ++sample) {
+                const DWORD wait =
+                    WaitForSingleObject(launched->process.get(), 1000);
+                if (wait == WAIT_OBJECT_0) {
+                    break;
+                }
+                if (wait == WAIT_FAILED) {
+                    return finish_failed({
+                        &*launched, &applied, true,
+                        Error::make(ErrorCode::OsError,
+                                    "Mobile UI validation wait failed",
+                                    GetLastError())});
+                }
+
+                MobileUiTelemetry current{};
+                std::span bytes(reinterpret_cast<std::byte*>(&current),
+                                sizeof(current));
+                auto read = patch::read_bytes(launched->process,
+                                              telemetry_address, bytes);
+                if (!read) {
+                    std::cout << "mobile-ui runtime: telemetry read failed: "
+                              << read.error().message << "\n";
+                    break;
+                }
+                if (std::memcmp(&current, &previous, sizeof(current)) != 0) {
+                    const auto yes_no = [](uint32_t value) {
+                        return value != 0 ? "yes" : "no";
+                    };
+                    std::cout
+                        << "mobile-ui runtime:\n"
+                        << "  function-entry-hits "
+                        << current.function_entry_hits << "\n"
+                        << "  graph-ready       "
+                        << yes_no(current.graph_ready) << "\n"
+                        << "  ui-ready          " << yes_no(current.ui_ready)
+                        << "\n"
+                        << "  input-ready       "
+                        << yes_no(current.input_ready) << "\n"
+                        << "  gui-set-called    "
+                        << yes_no(current.gui_set_called) << "\n"
+                        << "  input-set-called  "
+                        << yes_no(current.input_set_called) << "\n"
+                        << "  self-unhooked     "
+                        << yes_no(current.self_unhooked) << "\n"
+                        << "  original-resumed  "
+                        << yes_no(current.original_resumed) << "\n"
+                        << "  completed         "
+                        << yes_no(current.completed) << "\n";
+                    previous = current;
+                }
+                if (current.completed != 0) {
+                    break;
                 }
             }
-        } else if (startup_wait == WAIT_FAILED) {
-            return finish_failed({
-                &*launched, &applied, true,
-                Error::make(ErrorCode::OsError,
-                            "Mobile UI startup wait failed", GetLastError())});
         }
     }
+#endif
 
     const DWORD process_wait =
         WaitForSingleObject(launched->process.get(), INFINITE);

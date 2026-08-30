@@ -32,8 +32,13 @@ TEST_CASE("default config parses into the built-in presets",
     REQUIRE(ipad->ui.dpi_scale.has_value());
     CHECK(*ipad->ui.dpi_scale == 2.0f);
     REQUIRE(ipad->render.resolution.has_value());
-    CHECK(ipad->render.resolution->width == 1080);
-    CHECK(ipad->render.resolution->height == 1920);
+    CHECK(ipad->render.resolution->width == 2266);
+    CHECK(ipad->render.resolution->height == 1488);
+    CHECK(ipad->runtime.fps == 60);
+    REQUIRE(ipad->match.resolution.has_value());
+    CHECK(ipad->match.resolution->width == 2266);
+    CHECK(ipad->match.resolution->height == 1488);
+    CHECK_FALSE(ipad->match.portrait.has_value());
     CHECK(ipad->match.auto_select);  // legacy "match = auto" string form
 
     auto starrail = profile::find_profile(*config, "starrail_desktop");
@@ -137,7 +142,7 @@ TEST_CASE("missing profile id reports not found", "[profile][config]") {
     CHECK(missing.error().code == ErrorCode::ProfileNotFound);
 }
 
-TEST_CASE("auto matching picks mobile profiles for portrait displays",
+TEST_CASE("auto matching picks iPad mini profile for its exact mode",
           "[profile][matcher]") {
     auto config = profile::parse_config(profile::default_config_toml());
     REQUIRE(config.has_value());
@@ -149,24 +154,26 @@ TEST_CASE("auto matching picks mobile profiles for portrait displays",
     landscape.right = 2560;
     landscape.bottom = 1440;
 
-    win32::DisplayInfo portrait;
-    portrait.is_attached = true;
-    portrait.left = 2560;
-    portrait.top = 0;
-    portrait.right = 3640;
-    portrait.bottom = 2560;  // 1080x2560 -> portrait
+    win32::DisplayInfo ipad_mini;
+    ipad_mini.is_attached = true;
+    ipad_mini.left = 2560;
+    ipad_mini.top = 0;
+    ipad_mini.right = 4826;
+    ipad_mini.bottom = 1488;  // 2266x1488 landscape mode
 
     auto desktop = profile::match_auto_profile(*config, GameId::Genshin, {landscape});
     REQUIRE(desktop.has_value());
     CHECK(desktop->id == "desktop");
 
-    auto mobile = profile::match_auto_profile(*config, GameId::Genshin, {landscape, portrait});
+    auto mobile = profile::match_auto_profile(
+        *config, GameId::Genshin, {landscape, ipad_mini});
     REQUIRE(mobile.has_value());
     CHECK(mobile->id == "ipad");
     CHECK(mobile->ui.mobile_ui);
 
     // No starrail profile at all -> error, not a silent wrong pick.
-    auto starrail = profile::match_auto_profile(*config, GameId::StarRail, {portrait});
+    auto starrail =
+        profile::match_auto_profile(*config, GameId::StarRail, {ipad_mini});
     REQUIRE_FALSE(starrail.has_value());
     CHECK(starrail.error().code == ErrorCode::ProfileNotFound);
 }

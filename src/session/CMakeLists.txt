@@ -14,3 +14,10 @@ target_link_libraries(hoyoflux_session
   PUBLIC hoyoflux_domain hoyoflux_game hoyoflux_patch hoyoflux_platform_win32
          hoyoflux_scan hoyoflux_runtime
 )
+
+if(HOYOFLUX_EXPERIMENTAL_MOBILE_UI)
+  target_compile_definitions(
+    hoyoflux_session
+    PRIVATE HOYOFLUX_EXPERIMENTAL_MOBILE_UI=1
+  )
+endif()
