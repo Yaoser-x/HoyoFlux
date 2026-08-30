@@ -7,6 +7,7 @@
 #include "platform/win32/process.hpp"
 #include "platform/win32/registry.hpp"
 #include "platform/win32/notification.hpp"
+#include "platform/win32/text.hpp"
 #include "platform/win32/unique_handle.hpp"
 
 #include <windows.h>
@@ -361,4 +362,13 @@ TEST_CASE("notification cleanup is idempotent",
           "[win32][notification][b1-r0]") {
     w32::cleanup_notifications();
     w32::cleanup_notifications();
+}
+
+TEST_CASE("UTF-16 diagnostics are converted to UTF-8",
+          "[win32][text][b1-r0]") {
+    CHECK(w32::utf8(L"\x539f\x795e") ==
+          std::string("\xE5\x8E\x9F\xE7\xA5\x9E", 6));
+
+    const std::wstring invalid(1, static_cast<wchar_t>(0xD800));
+    CHECK(w32::utf8(invalid) == "<invalid UTF-16>");
 }

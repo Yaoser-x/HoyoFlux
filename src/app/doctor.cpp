@@ -13,6 +13,7 @@
 #include "platform/win32/privilege.hpp"
 #include "platform/win32/process.hpp"
 #include "platform/win32/registry.hpp"
+#include "platform/win32/text.hpp"
 #include "profile/config.hpp"
 #include "scan/module_snapshot.hpp"
 #include "session/journal.hpp"
@@ -37,21 +38,6 @@ using namespace hoyoflux;
 // The CLI config lives next to the state directory the journal owns.
 std::filesystem::path config_path() {
     return session::journal_path().parent_path().parent_path() / "config.toml";
-}
-
-// Console-safe narrowing of registry paths (the Genshin CN key is
-// non-ASCII). UTF-8 output; a legacy console may need `chcp 65001`.
-std::string narrow(std::wstring_view wide) {
-    if (wide.empty()) {
-        return {};
-    }
-    const int size = WideCharToMultiByte(CP_UTF8, 0, wide.data(),
-                                         static_cast<int>(wide.size()), nullptr,
-                                         0, nullptr, nullptr);
-    std::string utf8(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
-                        utf8.data(), size, nullptr, nullptr);
-    return utf8;
 }
 
 int g_failures = 0;
@@ -211,11 +197,11 @@ void check_game(GameId game) {
                     }
                 }
             }
-            std::cout << "       root HKCU\\" << narrow(root)
+            std::cout << "       root HKCU\\" << win32::utf8(root)
                       << ": " << screenmanager << " Screenmanager value(s)\n";
         } else {
             std::cout << "       root HKCU\\"
-                      << narrow(root) << ": absent\n";
+                      << win32::utf8(root) << ": absent\n";
         }
     }
 

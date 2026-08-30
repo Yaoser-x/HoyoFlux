@@ -1,5 +1,7 @@
 #include "game/launch/launch_plan.hpp"
 
+#include "platform/win32/text.hpp"
+
 #include <cwctype>
 #include <string>
 
@@ -56,7 +58,7 @@ Result<std::vector<std::wstring>> merge_passthrough(
         if (is_managed_launch_field(token)) {
             return std::unexpected(Error::make(
                 ErrorCode::InvalidArgument,
-                "passthrough argument '" + std::string(token.begin(), token.end()) +
+                "passthrough argument '" + win32::utf8(token) +
                     "' conflicts with a profile-managed render field (" +
                     std::string(context) +
                     "); remove it from the passthrough or change the profile"));

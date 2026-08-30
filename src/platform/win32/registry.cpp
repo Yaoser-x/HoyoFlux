@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "platform/win32/text.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <span>
@@ -19,25 +21,6 @@ constexpr std::wstring_view kGameInstallPath = L"GameInstallPath";
 constexpr std::wstring_view kGenshinCnExe = L"YuanShen.exe";
 constexpr std::wstring_view kGenshinGlobalExe = L"GenshinImpact.exe";
 constexpr std::wstring_view kStarRailExe = L"StarRail.exe";
-
-std::string utf8(std::wstring_view w) {
-    if (w.empty()) {
-        return {};
-    }
-    const int size = WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (size <= 0) {
-        return "<invalid UTF-16>";
-    }
-    std::string result(static_cast<size_t>(size), '\0');
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(),
-                            static_cast<int>(w.size()), result.data(), size,
-                            nullptr, nullptr) <= 0) {
-        return "<invalid UTF-16>";
-    }
-    return result;
-}
 
 // RAII for a registry key (RegCloseKey, not CloseHandle).
 class RegKey {

@@ -2,6 +2,7 @@
 
 #include "game/game_adapter.hpp"
 #include "platform/win32/registry.hpp"
+#include "platform/win32/text.hpp"
 
 #include <algorithm>
 
@@ -47,7 +48,7 @@ Result<void> PersistentStateGuard::arm(Watch& watch) {
     if (status != ERROR_SUCCESS) {
         return std::unexpected(Error::make(
             ErrorCode::RegistryReadFailed,
-            "RegNotifyChangeKeyValue failed for " + std::string(watch.root.begin(), watch.root.end()),
+            "RegNotifyChangeKeyValue failed for " + win32::utf8(watch.root),
             status));
     }
     return {};
@@ -82,7 +83,7 @@ Result<void> PersistentStateGuard::start(const PersistentDisplayState& snapshot)
             return std::unexpected(Error::make(
                 ErrorCode::RegistryReadFailed,
                 "RegOpenKeyExW(KEY_NOTIFY) failed for " +
-                    std::string(set.root.begin(), set.root.end()),
+                    win32::utf8(set.root),
                 status));
         }
         watch.key = OwnedKey(raw);

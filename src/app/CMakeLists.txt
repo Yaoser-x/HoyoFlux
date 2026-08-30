@@ -10,6 +10,12 @@ add_executable(hoyoflux WIN32
   hoyoflux.rc
 )
 
+if(MSVC)
+  # hoyoflux.rc embeds the one authoritative asInvoker manifest. Do not let
+  # the MSVC linker generate a second manifest resource.
+  target_link_options(hoyoflux PRIVATE /MANIFEST:NO)
+endif()
+
 target_include_directories(hoyoflux PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 include(FetchContent)
