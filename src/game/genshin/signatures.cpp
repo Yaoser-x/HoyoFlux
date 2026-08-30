@@ -137,9 +137,9 @@ Result<scan::Signature> signature(SignatureId id) {
         return scan::make_signature("genshin.mobileui.input", kIl2CppSection,
                                     kMobileUiInput, {raw_i32(0x10)});
     case SignatureId::UnhookTime:
-        // Lifecycle call site plus its original callee. Mobile UI redirects
-        // the call displacement to a near one-shot stub running on the game
-        // thread; the stub calls the original callee first.
+        // Upstream semantics: the second CALL target is the lifecycle
+        // function entry that gets hooked. Keep the displacement field only
+        // as a diagnostic so verbose output can identify the matched site.
         return scan::make_signature("genshin.unhooktime", kIl2CppSection,
                                     kUnhookTime,
                                     {field_disp(9), rip_rel(9, 4)});

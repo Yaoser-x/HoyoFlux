@@ -377,10 +377,10 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
                   << "  input-set            " << hex_address(d.func_input_set)
                   << "\n"
                   << "  lifecycle-hook       "
-                  << hex_address(d.lifecycle_call_disp) << "\n"
-                  << "  lifecycle-callee     "
-                  << hex_address(d.lifecycle_original_callee) << "\n"
-                  << "  mode                 experimental-one-shot\n";
+                  << hex_address(d.lifecycle_function_entry) << "\n"
+                  << "  call-site-diagnostic "
+                  << hex_address(d.lifecycle_call_disp_diagnostic) << "\n"
+                  << "  mode                 upstream-function-entry\n";
     }
     patch::AppliedPatch applied;
     auto apply_result = patch::apply_patch_plan(launched->process, *plan);
@@ -393,7 +393,7 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
             applied.operations.begin(), applied.operations.end(),
             [](const auto& operation) {
                 return operation.op.kind ==
-                       PatchOperationKind::InstallOneShotDetour;
+                       PatchOperationKind::InstallFunctionEntryDetour;
             });
         if (detour != applied.operations.end()) {
             std::cout << "  hook-original        "
@@ -476,7 +476,7 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
                 applied.operations.begin(), applied.operations.end(),
                 [](const auto& operation) {
                     return operation.op.kind ==
-                           PatchOperationKind::InstallOneShotDetour;
+                           PatchOperationKind::InstallFunctionEntryDetour;
                 });
             if (detour != applied.operations.end() &&
                 detour->allocated_base != 0) {
@@ -494,8 +494,8 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
                         };
                         std::cout
                             << "mobile-ui runtime:\n"
-                            << "  lifecycle-hits    "
-                            << telemetry.lifecycle_hits << "\n"
+                            << "  function-entry-hits "
+                            << telemetry.function_entry_hits << "\n"
                             << "  graph-ready       "
                             << yes_no(telemetry.graph_ready) << "\n"
                             << "  ui-ready          "
@@ -506,6 +506,10 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
                             << yes_no(telemetry.gui_set_called) << "\n"
                             << "  input-set-called  "
                             << yes_no(telemetry.input_set_called) << "\n"
+                            << "  self-unhooked     "
+                            << yes_no(telemetry.self_unhooked) << "\n"
+                            << "  original-resumed  "
+                            << yes_no(telemetry.original_resumed) << "\n"
                             << "  completed         "
                             << yes_no(telemetry.completed) << "\n";
                     } else {

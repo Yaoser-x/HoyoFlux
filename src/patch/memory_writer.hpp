@@ -36,6 +36,10 @@ Result<uintptr_t> allocate_near(const win32::UniqueHandle& process,
 Result<uintptr_t> allocate_code_near(const win32::UniqueHandle& process,
                                      uintptr_t near_address, size_t size);
 
+// Allocate executable storage without a placement constraint. Used by
+// absolute function-entry detours, which do not have rel32 reach limits.
+Result<uintptr_t> allocate_code(const win32::UniqueHandle& process, size_t size);
+
 // F7: write one 32-bit value (the dynamic fps channel for plans without a
 // RemoteState redirect).
 Result<void> write_u32(const win32::UniqueHandle& process, uintptr_t address,

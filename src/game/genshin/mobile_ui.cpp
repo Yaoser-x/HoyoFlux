@@ -18,8 +18,8 @@ struct MobileUiFields {
     int32_t grph_input_offset{0};
     uintptr_t func_gui_set{0};
     uintptr_t func_input_set{0};
-    uintptr_t lifecycle_call_disp{0};
-    uintptr_t lifecycle_original_callee{0};
+    uintptr_t lifecycle_call_disp_diagnostic{0};
+    uintptr_t lifecycle_function_entry{0};
 };
 
 Result<MobileUiFields> resolve_fields(
@@ -57,8 +57,8 @@ Result<MobileUiFields> resolve_fields(
         static_cast<int32_t>(static_cast<uint32_t>(input->fields[0]));
     fields.func_gui_set = mobile->fields[2];
     fields.func_input_set = mobile->fields[3];
-    fields.lifecycle_call_disp = lifecycle->fields[0];
-    fields.lifecycle_original_callee = lifecycle->fields[1];
+    fields.lifecycle_call_disp_diagnostic = lifecycle->fields[0];
+    fields.lifecycle_function_entry = lifecycle->fields[1];
     return fields;
 }
 
@@ -82,6 +82,8 @@ void patch_rel32(std::vector<std::byte>& code, size_t field, size_t target) {
 struct BuiltStub {
     std::vector<std::byte> code;
     uint32_t telemetry_offset{0};
+    uint32_t original_bytes_offset{0};
+    uint32_t virtual_protect_offset{0};
 };
 
 size_t emit_increment_counter(std::vector<std::byte>& code) {
@@ -99,78 +101,100 @@ size_t emit_set_counter(std::vector<std::byte>& code) {
     return field;
 }
 
-BuiltStub build_one_shot_stub(const MobileUiFields& fields) {
+BuiltStub build_function_entry_stub(const MobileUiFields& fields) {
     std::vector<std::byte> code;
-    append(code, {0x48, 0x83, 0xEC, 0x68});  // sub rsp, 68h
-    const size_t lifecycle_hits = emit_increment_counter(code);
-    patch::x64::emit_mov_rax_imm64(code, fields.lifecycle_original_callee);
-    patch::x64::emit_call_rax(code);
-    append(code, {0x48, 0x89, 0x44, 0x24, 0x20});  // save rax
-    append(code, {0x48, 0x89, 0x54, 0x24, 0x28});  // save rdx
-    append(code, {0xF3, 0x0F, 0x7F, 0x44, 0x24, 0x30});  // save xmm0
+    append(code, {0x53, 0x55, 0x56, 0x57});  // push rbx/rbp/rsi/rdi
+    append(code, {0x48, 0x83, 0xEC, 0x58});  // shadow + locals, aligned
+    const size_t function_entry_hits = emit_increment_counter(code);
+    append(code, {0x48, 0x89, 0x4C, 0x24, 0x20});  // save original rcx
+    append(code, {0x48, 0x89, 0x54, 0x24, 0x28});  // mirror upstream rdx save
 
-    append(code, {0x80, 0x3D});  // cmp byte ptr [rip+flag], 0
-    const size_t cmp_flag_disp = code.size();
+    // VirtualProtect(entry, 16, PAGE_EXECUTE_READWRITE, &old_protect)
+    patch::x64::emit_mov_rcx_imm64(code, fields.lifecycle_function_entry);
+    patch::x64::emit_mov_edx_imm32(code, 16);
+    append(code, {0x41, 0xB8});
+    append_i32(code, 0x40);  // PAGE_EXECUTE_READWRITE
+    append(code, {0x4C, 0x8D, 0x4C, 0x24, 0x30});
+    append(code, {0x48, 0x8B, 0x05});  // mov rax, [rip+vp_slot]
+    const size_t vp_call_1 = code.size();
     append_i32(code, 0);
-    append(code, {0x00, 0x0F, 0x85});  // jne done
-    const size_t already_done_jump = code.size();
+    patch::x64::emit_call_rax(code);
+
+    // Restore the exact 16 entry bytes before calling the original function.
+    append(code, {0x48, 0xBF});  // mov rdi, entry
+    const auto entry = fields.lifecycle_function_entry;
+    const auto* entry_raw = reinterpret_cast<const std::byte*>(&entry);
+    code.insert(code.end(), entry_raw, entry_raw + sizeof(entry));
+    append(code, {0xF3, 0x0F, 0x6F, 0x05});  // movdqu xmm0, [rip+original]
+    const size_t original_load = code.size();
     append_i32(code, 0);
+    append(code, {0xF3, 0x0F, 0x7F, 0x07});  // movdqu [rdi], xmm0
+    const size_t self_unhooked = emit_set_counter(code);
+
+    // Restore the page's original protection.
+    patch::x64::emit_mov_rcx_imm64(code, fields.lifecycle_function_entry);
+    patch::x64::emit_mov_edx_imm32(code, 16);
+    append(code, {0x44, 0x8B, 0x44, 0x24, 0x30});  // mov r8d, old_protect
+    append(code, {0x4C, 0x8D, 0x4C, 0x24, 0x34});
+    append(code, {0x48, 0x8B, 0x05});
+    const size_t vp_call_2 = code.size();
+    append_i32(code, 0);
+    patch::x64::emit_call_rax(code);
+
+    // Upstream restores RCX and calls the now-unhooked original entry.
+    append(code, {0x48, 0x8B, 0x4C, 0x24, 0x20});
+    patch::x64::emit_mov_rax_imm64(code, fields.lifecycle_function_entry);
+    patch::x64::emit_call_rax(code);
+    const size_t original_resumed = emit_set_counter(code);
 
     patch::x64::emit_mov_rax_imm64(code, fields.grph_class_global);
-    append(code, {0x48, 0x8B, 0x00});  // rax = [grph_class_global]
-    append(code, {0x48, 0x85, 0xC0, 0x0F, 0x84});
+    append(code, {0x48, 0x8B, 0x18});  // rbx = [grph_class_global]
+    append(code, {0x48, 0x85, 0xDB, 0x0F, 0x84});
     const size_t null_global_jump = code.size();
     append_i32(code, 0);
     const size_t graph_ready = emit_set_counter(code);
-    append(code, {0x48, 0x89, 0x44, 0x24, 0x40});  // save graph object
 
-    append(code, {0x48, 0x8B, 0x88});  // rcx = [rax+ui_offset]
+    append(code, {0x48, 0x8B, 0x8B});  // rcx = [rbx+ui_offset]
     append_i32(code, fields.grph_ui_offset);
-    append(code, {0x48, 0x85, 0xC9, 0x0F, 0x84});
-    const size_t null_ui_jump = code.size();
+    append(code, {0x48, 0x85, 0xC9, 0x0F, 0x84});  // telemetry only
+    const size_t ui_not_ready = code.size();
     append_i32(code, 0);
     const size_t ui_ready = emit_set_counter(code);
-    append(code, {0x48, 0x89, 0x4C, 0x24, 0x48});  // save UI object
-
-    append(code, {0x48, 0x8B, 0x44, 0x24, 0x40});
-    append(code, {0x48, 0x8B, 0x88});  // rcx = [rax+input_offset]
-    append_i32(code, fields.grph_input_offset);
-    append(code, {0x48, 0x85, 0xC9, 0x0F, 0x84});
-    const size_t null_input_jump = code.size();
-    append_i32(code, 0);
-    const size_t input_ready = emit_set_counter(code);
-    append(code, {0x48, 0x89, 0x4C, 0x24, 0x50});  // save input object
-
-    // Disable only after every required runtime object is valid. If the
-    // lifecycle point arrives unusually early, a later hit may retry.
-    append(code, {0xC6, 0x05});  // mov byte ptr [rip+flag], 1
-    const size_t set_flag_disp = code.size();
-    append_i32(code, 0);
-    append(code, {0x01});
-
-    append(code, {0x48, 0x8B, 0x4C, 0x24, 0x48});
-    patch::x64::emit_mov_edx_imm32(code, 2);
+    const size_t ui_call = code.size();
+    patch_rel32(code, ui_not_ready, ui_call);
+    append(code, {0x31, 0xD2});  // upstream: edx = 0
     append(code, {0x41, 0xB8});  // mov r8d, 1
     append_i32(code, 1);
     patch::x64::emit_mov_rax_imm64(code, fields.func_gui_set);
     patch::x64::emit_call_rax(code);
     const size_t gui_set_called = emit_set_counter(code);
 
-    append(code, {0x48, 0x8B, 0x4C, 0x24, 0x50});
-    patch::x64::emit_mov_edx_imm32(code, 3);
-    append(code, {0x45, 0x31, 0xC0});  // xor r8d, r8d
+    append(code, {0x48, 0x8B, 0x8B});  // rcx = [rbx+input_offset]
+    append_i32(code, fields.grph_input_offset);
+    append(code, {0x48, 0x85, 0xC9, 0x0F, 0x84});
+    const size_t input_not_ready = code.size();
+    append_i32(code, 0);
+    const size_t input_ready = emit_set_counter(code);
+    const size_t input_call = code.size();
+    patch_rel32(code, input_not_ready, input_call);
+    append(code, {0x31, 0xD2});  // upstream: edx = 0
+    append(code, {0x45, 0x31, 0xC0});  // r8d = false
     patch::x64::emit_mov_rax_imm64(code, fields.func_input_set);
     patch::x64::emit_call_rax(code);
     const size_t input_set_called = emit_set_counter(code);
     const size_t completed = emit_set_counter(code);
 
     const size_t done_label = code.size();
-    append(code, {0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x30});  // restore xmm0
-    append(code, {0x48, 0x8B, 0x54, 0x24, 0x28});
-    append(code, {0x48, 0x8B, 0x44, 0x24, 0x20});
-    append(code, {0x48, 0x83, 0xC4, 0x68, 0xC3});
-    const size_t flag = code.size();
-    code.push_back(std::byte{0});
+    append(code, {0x48, 0x83, 0xC4, 0x58});
+    append(code, {0x5F, 0x5E, 0x5D, 0x5B, 0xC3});
+
+    while ((code.size() % alignof(uintptr_t)) != 0) {
+        code.push_back(std::byte{0});
+    }
+    const size_t virtual_protect = code.size();
+    code.resize(code.size() + sizeof(uintptr_t), std::byte{0});
+    const size_t original_bytes = code.size();
+    code.resize(code.size() + 16, std::byte{0});
     while ((code.size() % alignof(MobileUiTelemetry)) != 0) {
         code.push_back(std::byte{0});
     }
@@ -178,14 +202,12 @@ BuiltStub build_one_shot_stub(const MobileUiFields& fields) {
     code.resize(code.size() + sizeof(MobileUiTelemetry), std::byte{0});
     patch::x64::emit_int3_padding(code, 8);
 
-    patch_rel32(code, cmp_flag_disp, flag);
-    patch_rel32(code, set_flag_disp, flag);
-    patch_rel32(code, already_done_jump, done_label);
+    patch_rel32(code, vp_call_1, virtual_protect);
+    patch_rel32(code, vp_call_2, virtual_protect);
+    patch_rel32(code, original_load, original_bytes);
     patch_rel32(code, null_global_jump, done_label);
-    patch_rel32(code, null_ui_jump, done_label);
-    patch_rel32(code, null_input_jump, done_label);
-    patch_rel32(code, lifecycle_hits,
-                telemetry + offsetof(MobileUiTelemetry, lifecycle_hits));
+    patch_rel32(code, function_entry_hits,
+                telemetry + offsetof(MobileUiTelemetry, function_entry_hits));
     patch_rel32(code, graph_ready,
                 telemetry + offsetof(MobileUiTelemetry, graph_ready));
     patch_rel32(code, ui_ready,
@@ -196,9 +218,15 @@ BuiltStub build_one_shot_stub(const MobileUiFields& fields) {
                 telemetry + offsetof(MobileUiTelemetry, gui_set_called));
     patch_rel32(code, input_set_called,
                 telemetry + offsetof(MobileUiTelemetry, input_set_called));
+    patch_rel32(code, self_unhooked,
+                telemetry + offsetof(MobileUiTelemetry, self_unhooked));
+    patch_rel32(code, original_resumed,
+                telemetry + offsetof(MobileUiTelemetry, original_resumed));
     patch_rel32(code, completed,
                 telemetry + offsetof(MobileUiTelemetry, completed));
-    return BuiltStub{std::move(code), static_cast<uint32_t>(telemetry)};
+    return BuiltStub{std::move(code), static_cast<uint32_t>(telemetry),
+                     static_cast<uint32_t>(original_bytes),
+                     static_cast<uint32_t>(virtual_protect)};
 }
 
 }  // namespace
@@ -206,7 +234,8 @@ BuiltStub build_one_shot_stub(const MobileUiFields& fields) {
 std::vector<std::byte> GenshinMobileUiPatchBuilder::build_stub(
     const std::vector<ResolvedSignature>& resolved) {
     auto fields = resolve_fields(resolved);
-    return fields ? build_one_shot_stub(*fields).code : std::vector<std::byte>{};
+    return fields ? build_function_entry_stub(*fields).code
+                  : std::vector<std::byte>{};
 }
 
 Result<void> GenshinMobileUiPatchBuilder::add_operations(
@@ -215,15 +244,16 @@ Result<void> GenshinMobileUiPatchBuilder::add_operations(
     if (!fields) {
         return std::unexpected(fields.error());
     }
-    auto stub = build_one_shot_stub(*fields);
-    plan.operations.push_back(PatchOperation::install_one_shot_detour(
-        fields->lifecycle_call_disp, fields->lifecycle_original_callee,
-        std::move(stub.code)));
+    auto stub = build_function_entry_stub(*fields);
+    plan.operations.push_back(PatchOperation::install_function_entry_detour(
+        fields->lifecycle_function_entry, std::move(stub.code),
+        stub.original_bytes_offset, stub.virtual_protect_offset));
     plan.mobile_ui_diagnostic = MobileUiDiagnostic{
         std::string(fields->variant), fields->grph_class_global,
         fields->grph_ui_offset, fields->grph_input_offset,
         fields->func_gui_set, fields->func_input_set,
-        fields->lifecycle_call_disp, fields->lifecycle_original_callee,
+        fields->lifecycle_call_disp_diagnostic,
+        fields->lifecycle_function_entry,
         stub.telemetry_offset};
     return {};
 }

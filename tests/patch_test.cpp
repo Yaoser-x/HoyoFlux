@@ -224,25 +224,35 @@ TEST_CASE("engine redirect resolves the RemoteState symbol", "[patch][engine]") 
     CHECK(applied->runtime.base == 0);  // state block released
 }
 
-TEST_CASE("one-shot detour redirects a lifecycle call and rolls back exactly",
+TEST_CASE("function-entry detour installs an absolute jump and rolls back exactly",
           "[patch][engine]") {
     const auto process = self_process();
     auto buffer = WindowBuffer::filled();
     const auto original = buffer.raw;
 
     PatchPlan plan;
-    plan.runtime.near_address =
-        reinterpret_cast<uintptr_t>(buffer.raw.data());
-    plan.operations.push_back(PatchOperation::install_one_shot_detour(
-        buffer.disp_field(), /*original_callee=*/0x12345678,
-        {std::byte{0xC3}}));
+    std::vector<std::byte> stub(32, std::byte{0});
+    plan.operations.push_back(PatchOperation::install_function_entry_detour(
+        reinterpret_cast<uintptr_t>(buffer.raw.data()), std::move(stub),
+        /*original_bytes_offset=*/0, /*virtual_protect_offset=*/16));
 
     auto applied = patch::apply_patch_plan(process, plan);
     REQUIRE(applied.has_value());
     REQUIRE(applied->stubs.size() == 1);
-    const auto reached = static_cast<uintptr_t>(
-        static_cast<int64_t>(buffer.disp_field() + 4) + buffer.disp());
+    CHECK(buffer.raw[0] == std::byte{0xFF});
+    CHECK(buffer.raw[1] == std::byte{0x25});
+    uintptr_t reached = 0;
+    std::memcpy(&reached, buffer.raw.data() + 6, sizeof(reached));
     CHECK(reached == applied->stubs[0].base);
+    std::array<std::byte, 32> installed_stub{};
+    REQUIRE(patch::read_bytes(process, applied->stubs[0].base, installed_stub)
+                .has_value());
+    CHECK(std::equal(original.begin(), original.begin() + 16,
+                     installed_stub.begin()));
+    uintptr_t virtual_protect = 0;
+    std::memcpy(&virtual_protect, installed_stub.data() + 16,
+                sizeof(virtual_protect));
+    CHECK(virtual_protect != 0);
 
     REQUIRE(patch::rollback_patch_plan(process, *applied).has_value());
     CHECK(buffer.raw == original);

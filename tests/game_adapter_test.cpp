@@ -752,7 +752,7 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
         REQUIRE(plan.has_value());
         REQUIRE(plan->operations.size() == 2);
         CHECK(plan->operations[1].kind ==
-              PatchOperationKind::InstallOneShotDetour);
+              PatchOperationKind::InstallFunctionEntryDetour);
         REQUIRE(plan->mobile_ui_diagnostic.has_value());
         CHECK(plan->mobile_ui_diagnostic->grph_ui_offset == 0x2000);
         CHECK(plan->mobile_ui_diagnostic->grph_input_offset == 0x5000);
@@ -767,7 +767,7 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
     }
 }
 
-TEST_CASE("genshin mobile UI builder composes a lifecycle one-shot detour",
+TEST_CASE("genshin mobile UI builder composes an upstream function-entry detour",
           "[game][mobileui]") {
     std::vector<ResolvedSignature> signatures;
     signatures.push_back(resolved("genshin.mobileui.v1",
@@ -784,9 +784,8 @@ TEST_CASE("genshin mobile UI builder composes a lifecycle one-shot detour",
             .has_value());
     REQUIRE(plan.operations.size() == 1);
     CHECK(plan.operations[0].kind ==
-          PatchOperationKind::InstallOneShotDetour);
-    CHECK(plan.operations[0].address == 0x6000);
-    CHECK(plan.operations[0].target_address == 0x7000);
+          PatchOperationKind::InstallFunctionEntryDetour);
+    CHECK(plan.operations[0].address == 0x7000);
     CHECK(plan.operations[0].data.size() > 64);
     CHECK(std::find(plan.operations[0].data.begin(),
                     plan.operations[0].data.end(), std::byte{0xC3}) !=
@@ -796,15 +795,15 @@ TEST_CASE("genshin mobile UI builder composes a lifecycle one-shot detour",
         return std::search(stub.begin(), stub.end(), instruction.begin(),
                            instruction.end()) != stub.end();
     };
-    CHECK(contains({std::byte{0xBA}, std::byte{0x02}, std::byte{0x00},
-                    std::byte{0x00}, std::byte{0x00}}));  // edx = 2
+    CHECK(contains({std::byte{0x31}, std::byte{0xD2}}));  // edx = 0
     CHECK(contains({std::byte{0x41}, std::byte{0xB8}, std::byte{0x01},
                     std::byte{0x00}, std::byte{0x00},
                     std::byte{0x00}}));  // r8d = true
-    CHECK(contains({std::byte{0xBA}, std::byte{0x03}, std::byte{0x00},
-                    std::byte{0x00}, std::byte{0x00}}));  // edx = 3
     CHECK(contains({std::byte{0x45}, std::byte{0x31},
                     std::byte{0xC0}}));  // r8d = false
+    REQUIRE(plan.mobile_ui_diagnostic.has_value());
+    CHECK(plan.mobile_ui_diagnostic->lifecycle_call_disp_diagnostic == 0x6000);
+    CHECK(plan.mobile_ui_diagnostic->lifecycle_function_entry == 0x7000);
 
     // Missing signatures are an explicit error, never a silent skip.
     PatchPlan empty_plan;

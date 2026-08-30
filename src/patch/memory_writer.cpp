@@ -150,6 +150,18 @@ Result<uintptr_t> allocate_code_near(const win32::UniqueHandle& process,
                                  PAGE_EXECUTE_READWRITE);
 }
 
+Result<uintptr_t> allocate_code(const win32::UniqueHandle& process, size_t size) {
+    void* memory = VirtualAllocEx(process.get(), nullptr, size,
+                                  MEM_RESERVE | MEM_COMMIT,
+                                  PAGE_EXECUTE_READWRITE);
+    if (memory == nullptr) {
+        return std::unexpected(Error::make(
+            ErrorCode::RemoteAllocFailed,
+            "unconstrained executable allocation failed", GetLastError()));
+    }
+    return reinterpret_cast<uintptr_t>(memory);
+}
+
 Result<void> write_u32(const win32::UniqueHandle& process, uintptr_t address,
                        uint32_t value) {
     std::array<std::byte, 4> raw{};

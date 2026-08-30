@@ -46,10 +46,11 @@ enum class PatchOperationKind {
     // operations earlier in the same plan.
     InvokeBootstrap,
 
-    // Redirect a lifecycle CALL rel32 at `address` (its displacement field)
-    // to a near executable stub. The stub calls `target_address` (the
-    // original callee) and internally disables its payload after one hit.
-    InstallOneShotDetour,
+    // Replace the first 16 bytes at a function entry with an absolute jump to
+    // an executable stub. The engine supplies the saved entry bytes and the
+    // target-process VirtualProtect address at the declared stub offsets so
+    // the stub can self-unhook before resuming the original function.
+    InstallFunctionEntryDetour,
 };
 
 // Where an operation's target lives. RemoteStateFps refers to the fps slot
@@ -63,7 +64,7 @@ enum class PatchTargetSymbol : unsigned char {
 struct PatchOperation {
     PatchOperationKind kind{PatchOperationKind::WriteBytes};
     uintptr_t address{0};
-    // WriteBytes / InstallCodeStub / InstallOneShotDetour payload.
+    // WriteBytes / InstallCodeStub / InstallFunctionEntryDetour payload.
     std::vector<std::byte> data;
 
     // F10: when non-empty, the engine reads the remote bytes first and
@@ -75,6 +76,8 @@ struct PatchOperation {
     uintptr_t target_address{0};  // RedirectRelative when symbol == Absolute
     uint32_t stub_index{0};       // InvokeBootstrap: index of installed stub
     uint32_t wait_timeout_ms{5000};  // InvokeBootstrap
+    uint32_t original_bytes_offset{0};
+    uint32_t virtual_protect_offset{0};
 
     [[nodiscard]] static PatchOperation write_bytes(
         uintptr_t address, std::span<const std::byte> bytes,
@@ -120,14 +123,15 @@ struct PatchOperation {
         op.wait_timeout_ms = wait_timeout_ms;
         return op;
     }
-    [[nodiscard]] static PatchOperation install_one_shot_detour(
-        uintptr_t call_disp_field, uintptr_t original_callee,
-        std::vector<std::byte> code) {
+    [[nodiscard]] static PatchOperation install_function_entry_detour(
+        uintptr_t function_entry, std::vector<std::byte> code,
+        uint32_t original_bytes_offset, uint32_t virtual_protect_offset) {
         PatchOperation op;
-        op.kind = PatchOperationKind::InstallOneShotDetour;
-        op.address = call_disp_field;
-        op.target_address = original_callee;
+        op.kind = PatchOperationKind::InstallFunctionEntryDetour;
+        op.address = function_entry;
         op.data = std::move(code);
+        op.original_bytes_offset = original_bytes_offset;
+        op.virtual_protect_offset = virtual_protect_offset;
         return op;
     }
 };
@@ -139,18 +143,20 @@ struct MobileUiDiagnostic {
     int32_t grph_input_offset{0};
     uintptr_t func_gui_set{0};
     uintptr_t func_input_set{0};
-    uintptr_t lifecycle_call_disp{0};
-    uintptr_t lifecycle_original_callee{0};
+    uintptr_t lifecycle_call_disp_diagnostic{0};
+    uintptr_t lifecycle_function_entry{0};
     uint32_t telemetry_offset{0};
 };
 
 struct MobileUiTelemetry {
-    uint32_t lifecycle_hits{0};
+    uint32_t function_entry_hits{0};
     uint32_t graph_ready{0};
     uint32_t ui_ready{0};
     uint32_t input_ready{0};
     uint32_t gui_set_called{0};
     uint32_t input_set_called{0};
+    uint32_t self_unhooked{0};
+    uint32_t original_resumed{0};
     uint32_t completed{0};
 };
 

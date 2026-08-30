@@ -23,7 +23,7 @@ namespace hoyoflux::patch {
 struct AppliedOperation {
     PatchOperation op;
     std::vector<std::byte> original;  // bytes as they were before the write
-    uintptr_t allocated_base{0};      // InstallCodeStub: page we own
+    uintptr_t allocated_base{0};  // installed executable page we own
 };
 
 // A bootstrap stub installed on its own executable page.
@@ -43,8 +43,8 @@ struct AppliedPatch {
 // into the returned AppliedPatch::runtime. On failure the already-applied
 // operations are rolled back before the error is returned.
 //
-// Requires the plan's anchor (runtime.near_address) when the plan contains
-// InstallCodeStub or InstallOneShotDetour operations.
+// Requires the plan's anchor (runtime.near_address) for InstallCodeStub.
+// Function-entry detours use an absolute jump and need no placement anchor.
 Result<AppliedPatch> apply_patch_plan(const win32::UniqueHandle& process,
                                       const PatchPlan& plan);
 

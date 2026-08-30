@@ -10,5 +10,5 @@ add_library(hoyoflux_patch STATIC
 target_include_directories(hoyoflux_patch PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 target_link_libraries(hoyoflux_patch
-  PUBLIC hoyoflux_domain hoyoflux_platform_win32
+  PUBLIC hoyoflux_domain hoyoflux_platform_win32 hoyoflux_scan
 )

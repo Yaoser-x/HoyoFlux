@@ -3,9 +3,12 @@
 #include "platform/win32/process.hpp"
 #include "patch/memory_writer.hpp"
 #include "patch/remote_state.hpp"
+#include "scan/module_snapshot.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <string>
 
@@ -30,6 +33,42 @@ int32_t redirect_displacement(uintptr_t disp_field, uintptr_t new_target) {
         static_cast<int64_t>(new_target) - static_cast<int64_t>(disp_field + 4);
     return delta >= std::numeric_limits<int32_t>::min() &&
            delta <= std::numeric_limits<int32_t>::max();
+}
+
+Result<uintptr_t> remote_virtual_protect(
+    const win32::UniqueHandle& process) {
+    const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    const auto local = reinterpret_cast<uintptr_t>(
+        GetProcAddress(kernel32, "VirtualProtect"));
+    if (local == 0) {
+        return std::unexpected(Error::make(
+            ErrorCode::OsError, "GetProcAddress(VirtualProtect) failed",
+            GetLastError()));
+    }
+    HMODULE owner = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(local), &owner)) {
+        return std::unexpected(Error::make(
+            ErrorCode::OsError, "cannot locate VirtualProtect owner module",
+            GetLastError()));
+    }
+    wchar_t path[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(owner, path, MAX_PATH);
+    if (length == 0 || length == MAX_PATH) {
+        return std::unexpected(Error::make(
+            ErrorCode::OsError, "cannot read VirtualProtect owner path",
+            GetLastError()));
+    }
+    const auto module_name =
+        std::filesystem::path(std::wstring_view(path, length)).filename().string();
+    auto remote_base = scan::remote_module_base(process, module_name);
+    if (!remote_base) {
+        return std::unexpected(remote_base.error());
+    }
+    return *remote_base +
+           (local - reinterpret_cast<uintptr_t>(owner));
 }
 
 uintptr_t resolve_target(const PatchOperation& op,
@@ -165,58 +204,58 @@ Result<AppliedOperation> apply_one(const win32::UniqueHandle& process,
         break;
     }
 
-    case PatchOperationKind::InstallOneShotDetour: {
-        if (runtime.near_address == 0) {
+    case PatchOperationKind::InstallFunctionEntryDetour: {
+        constexpr size_t kEntrySize = 16;
+        if (op.original_bytes_offset + kEntrySize > op.data.size() ||
+            op.virtual_protect_offset + sizeof(uintptr_t) > op.data.size()) {
             return std::unexpected(Error::make(
                 ErrorCode::PatchFailed,
-                "InstallOneShotDetour requires the plan's module anchor"));
+                "function-entry detour stub offsets are out of bounds"));
         }
-        auto base = allocate_code_near(process, runtime.near_address,
-                                       op.data.size());
+        record.original.assign(kEntrySize, std::byte{0});
+        if (auto read = read_bytes(process, op.address, record.original); !read) {
+            return std::unexpected(read.error());
+        }
+        auto virtual_protect = remote_virtual_protect(process);
+        if (!virtual_protect) {
+            return std::unexpected(virtual_protect.error());
+        }
+        auto code = op.data;
+        std::memcpy(code.data() + op.original_bytes_offset,
+                    record.original.data(), kEntrySize);
+        std::memcpy(code.data() + op.virtual_protect_offset,
+                    &*virtual_protect, sizeof(*virtual_protect));
+
+        auto base = allocate_code(process, code.size());
         if (!base) {
             return std::unexpected(base.error());
         }
-        if (!displacement_in_range(op.address, *base)) {
-            (void)free_remote(process, *base);
-            return std::unexpected(Error::make(
-                ErrorCode::PatchFailed,
-                "one-shot detour stub is out of rel32 reach"));
-        }
         SIZE_T written = 0;
         if (!WriteProcessMemory(process.get(), reinterpret_cast<LPVOID>(*base),
-                                op.data.data(), op.data.size(), &written) ||
-            written != op.data.size()) {
+                                code.data(), code.size(), &written) ||
+            written != code.size()) {
             (void)free_remote(process, *base);
             return std::unexpected(Error::make(
                 ErrorCode::RemoteWriteFailed,
-                "one-shot detour stub write failed", GetLastError()));
+                "function-entry detour stub write failed", GetLastError()));
         }
         FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(*base),
-                              op.data.size());
+                              code.size());
         record.allocated_base = *base;
-        stubs.push_back(AppliedStub{*base, op.data.size()});
-
-        const uintptr_t window_base = op.address & ~uintptr_t{7};
-        record.original.assign(kRedirectWindow, std::byte{0});
-        if (auto read = read_bytes(process, window_base, record.original); !read) {
-            (void)free_remote(process, *base);
-            stubs.pop_back();
-            return std::unexpected(read.error());
-        }
-        std::byte window[kRedirectWindow];
-        std::memcpy(window, record.original.data(), kRedirectWindow);
-        const int32_t disp = redirect_displacement(op.address, *base);
-        std::memcpy(window + (op.address & 7), &disp, sizeof(disp));
-        if (auto wrote = write_protected(process, window_base,
-                                         {window, kRedirectWindow});
+        std::array<std::byte, kEntrySize> jump{
+            std::byte{0xFF}, std::byte{0x25}, std::byte{0}, std::byte{0},
+            std::byte{0}, std::byte{0}};
+        std::memcpy(jump.data() + 6, &*base, sizeof(*base));
+        jump[14] = std::byte{0x90};
+        jump[15] = std::byte{0x90};
+        if (auto wrote = write_protected(process, op.address, jump);
             !wrote) {
             (void)free_remote(process, *base);
-            stubs.pop_back();
             return std::unexpected(wrote.error());
         }
-        FlushInstructionCache(process.get(),
-                              reinterpret_cast<LPCVOID>(window_base),
-                              kRedirectWindow);
+        stubs.push_back(AppliedStub{*base, code.size()});
+        FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(op.address),
+                              kEntrySize);
         break;
     }
     }
@@ -229,8 +268,7 @@ Result<void> undo_one(const win32::UniqueHandle& process,
         return {};
     }
     uintptr_t address = record.op.address;
-    if (record.op.kind == PatchOperationKind::RedirectRelative ||
-        record.op.kind == PatchOperationKind::InstallOneShotDetour) {
+    if (record.op.kind == PatchOperationKind::RedirectRelative) {
         address &= ~uintptr_t{7};  // window base
     }
     auto restored = write_protected(process, address, record.original);
@@ -239,7 +277,7 @@ Result<void> undo_one(const win32::UniqueHandle& process,
     }
     if (record.op.kind == PatchOperationKind::WriteBytes ||
         record.op.kind == PatchOperationKind::RedirectRelative ||
-        record.op.kind == PatchOperationKind::InstallOneShotDetour) {
+        record.op.kind == PatchOperationKind::InstallFunctionEntryDetour) {
         FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(address),
                               record.original.size());
     }
