@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <span>
@@ -361,6 +362,35 @@ TEST_CASE("notification failure is explicitly best effort",
 TEST_CASE("notification cleanup is idempotent",
           "[win32][notification][b1-r0]") {
     w32::cleanup_notifications();
+    w32::cleanup_notifications();
+}
+
+TEST_CASE("idle notification drain is immediate and idempotent",
+          "[win32][notification][b1-r0]") {
+    w32::cleanup_notifications();
+    const auto started = std::chrono::steady_clock::now();
+    w32::drain_notifications();
+    w32::drain_notifications();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    CHECK(elapsed < std::chrono::milliseconds(250));
+}
+
+TEST_CASE("notification drain waits for the transient lifetime",
+          "[win32][notification][b1-r0]") {
+    w32::cleanup_notifications();
+    const auto notified = w32::notify(L"HoyoFlux", L"test",
+                                      w32::NotificationKind::Info);
+    const auto started = std::chrono::steady_clock::now();
+    w32::drain_notifications();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    // Shell notification is best-effort and may be unavailable in a headless
+    // test runner. When it succeeds, drain must wait for the worker timer.
+    CHECK(elapsed < std::chrono::milliseconds(8500));
+    if (notified) {
+        CHECK(elapsed >= std::chrono::seconds(5));
+    }
+    w32::drain_notifications();
     w32::cleanup_notifications();
 }
 

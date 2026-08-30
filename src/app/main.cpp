@@ -172,6 +172,8 @@ void surface_one_click_error(std::wstring body) {
                                 win32::NotificationKind::Error);
     if (!result) {
         MessageBoxW(nullptr, body.c_str(), L"HoyoFlux", MB_OK | MB_ICONERROR);
+    } else {
+        win32::drain_notifications();
     }
 }
 
@@ -509,6 +511,7 @@ int run_one_click() {
         win32::notify_best_effort(win32::notify, L"HoyoFlux",
                                   L"游戏已结束\n会话设置已恢复",
                                   win32::NotificationKind::Success);
+        win32::drain_notifications();
     }
     return 0;
 }

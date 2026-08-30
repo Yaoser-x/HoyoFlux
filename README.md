@@ -66,7 +66,7 @@ starrail = "starrail_desktop"
 
 ## 项目范围
 
-仅支持 Windows x64。生产 EXE 是无主窗口的 Windows 应用：双击执行 One-click，携带显式参数时附加父控制台并保留 CLI。随包提供的 `hoyoflux-cli.cmd` 用 `start /wait` 包装显式 CLI，确保 PowerShell 等待 GUI 子系统 EXE 完成；直接调用 EXE 仍可用于交互式调试。通知图标由轻量 Win32 worker 临时持有，每次通知约 6 秒后自动清理，不会贯穿整个游戏 Session，也不提供托盘交互。当前不提供 GUI 设置编辑器、在线签名更新、驱动、通用 DLL 注入器或反作弊规避功能。
+仅支持 Windows x64。生产 EXE 是无主窗口的 Windows 应用：双击执行 One-click，携带显式参数时附加父控制台并保留 CLI。随包提供的 `hoyoflux-cli.cmd` 用 `start /wait` 包装显式 CLI，确保 PowerShell 等待 GUI 子系统 EXE 完成；直接调用 EXE 仍可用于交互式调试。通知图标由轻量 Win32 worker 临时持有，每次通知约 6 秒后自动清理，不会贯穿整个游戏 Session；启动通知不阻塞，成功/错误终态会在退出前等待当前通知自然结束，也不提供托盘交互。当前不提供 GUI 设置编辑器、在线签名更新、驱动、通用 DLL 注入器或反作弊规避功能。
 
 ## 构建
 

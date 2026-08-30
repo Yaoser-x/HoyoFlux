@@ -4,8 +4,10 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cwchar>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -15,9 +17,12 @@ namespace hoyoflux::win32 {
 namespace {
 
 constexpr UINT kNotifyMessage = WM_APP + 1;
-constexpr UINT kCleanupMessage = WM_APP + 2;
+constexpr UINT kDrainMessage = WM_APP + 2;
+constexpr UINT kShutdownMessage = WM_APP + 3;
 constexpr UINT_PTR kCleanupTimerId = 1;
 constexpr UINT kTransientDurationMs = 6000;
+constexpr auto kDrainTimeout = std::chrono::seconds(7);
+constexpr auto kShutdownWait = std::chrono::milliseconds(250);
 constexpr wchar_t kWindowClassName[] = L"HoyoFluxNotificationOwner";
 
 void copy_text(wchar_t* destination, size_t capacity, std::wstring_view text) {
@@ -33,127 +38,13 @@ struct NotifyRequest {
     std::optional<Result<void>> result;
 };
 
-class NotificationService {
+class NotificationWorker {
 public:
-    ~NotificationService() { cleanup(); }
-
-    Result<void> notify(std::wstring_view title, std::wstring_view body,
-                        NotificationKind kind) {
-        std::lock_guard operation_lock(operation_mutex_);
-        const HWND window = ensure_window();
-        if (window == nullptr) {
-            return std::unexpected(Error::make(
-                ErrorCode::OsError, "notification worker startup failed",
-                ERROR_GEN_FAILURE));
-        }
-
-        NotifyRequest request{std::wstring(title), std::wstring(body), kind,
-                              std::nullopt};
-        (void)SendMessageW(window, kNotifyMessage, 0,
-                           reinterpret_cast<LPARAM>(&request));
-        if (!request.result) {
-            return std::unexpected(Error::make(
-                ErrorCode::OsError, "notification worker did not respond",
-                ERROR_GEN_FAILURE));
-        }
-        return std::move(*request.result);
-    }
-
-    void cleanup() {
-        std::lock_guard operation_lock(operation_mutex_);
-
-        HWND window = nullptr;
-        {
-            std::unique_lock lifecycle_lock(lifecycle_mutex_);
-            if (!worker_.joinable()) {
-                return;
-            }
-            lifecycle_cv_.wait(lifecycle_lock,
-                               [this] { return ready_; });
-            window = window_;
-        }
-
-        if (window != nullptr) {
-            (void)SendMessageW(window, kCleanupMessage, 0, 0);
-        }
-
-        std::thread worker;
-        {
-            std::lock_guard lifecycle_lock(lifecycle_mutex_);
-            worker = std::move(worker_);
-        }
-        if (worker.joinable()) {
-            worker.join();
-        }
-    }
-
-private:
-    HWND ensure_window() {
-        std::unique_lock lifecycle_lock(lifecycle_mutex_);
-        if (!worker_.joinable()) {
-            ready_ = false;
-            running_ = false;
-            window_ = nullptr;
-            worker_ = std::thread([this] { worker_main(); });
-        }
-        lifecycle_cv_.wait(lifecycle_lock, [this] { return ready_; });
-        if (running_) {
-            return window_;
-        }
-
-        std::thread failed_worker = std::move(worker_);
-        lifecycle_lock.unlock();
-        if (failed_worker.joinable()) {
-            failed_worker.join();
-        }
-        return nullptr;
-    }
-
-    static LRESULT CALLBACK window_proc(HWND window, UINT message,
-                                        WPARAM wparam, LPARAM lparam) {
-        if (message == WM_NCCREATE) {
-            const auto* create =
-                reinterpret_cast<const CREATESTRUCTW*>(lparam);
-            SetWindowLongPtrW(
-                window, GWLP_USERDATA,
-                reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-        }
-
-        auto* service = reinterpret_cast<NotificationService*>(
-            GetWindowLongPtrW(window, GWLP_USERDATA));
-        if (service == nullptr) {
-            return DefWindowProcW(window, message, wparam, lparam);
-        }
-
-        switch (message) {
-        case kNotifyMessage:
-            service->handle_notify(
-                window, *reinterpret_cast<NotifyRequest*>(lparam));
-            return 0;
-        case kCleanupMessage:
-            service->remove_icon(window);
-            DestroyWindow(window);
-            PostQuitMessage(0);
-            return 0;
-        case WM_TIMER:
-            if (wparam == kCleanupTimerId) {
-                service->remove_icon(window);
-            }
-            return 0;
-        case WM_NCDESTROY:
-            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
-            break;
-        default:
-            break;
-        }
-        return DefWindowProcW(window, message, wparam, lparam);
-    }
-
-    void worker_main() {
+    void run() {
         const HINSTANCE instance = GetModuleHandleW(nullptr);
         WNDCLASSEXW window_class{};
         window_class.cbSize = sizeof(window_class);
-        window_class.lpfnWndProc = &NotificationService::window_proc;
+        window_class.lpfnWndProc = &NotificationWorker::window_proc;
         window_class.hInstance = instance;
         window_class.lpszClassName = kWindowClassName;
         const ATOM registered = RegisterClassExW(&window_class);
@@ -200,6 +91,98 @@ private:
         lifecycle_cv_.notify_all();
     }
 
+    bool wait_ready() {
+        std::unique_lock lifecycle_lock(lifecycle_mutex_);
+        lifecycle_cv_.wait(lifecycle_lock, [this] { return ready_; });
+        return running_;
+    }
+
+    bool running() {
+        std::lock_guard lifecycle_lock(lifecycle_mutex_);
+        return running_;
+    }
+
+    bool post_notify(NotifyRequest& request) {
+        const HWND window = window_handle();
+        if (window == nullptr) {
+            return false;
+        }
+        (void)SendMessageW(window, kNotifyMessage, 0,
+                           reinterpret_cast<LPARAM>(&request));
+        return request.result.has_value();
+    }
+
+    bool post_drain() {
+        const HWND window = window_handle();
+        return window != nullptr && PostMessageW(window, kDrainMessage, 0, 0);
+    }
+
+    bool post_shutdown() {
+        const HWND window = window_handle();
+        return window != nullptr &&
+               PostMessageW(window, kShutdownMessage, 0, 0);
+    }
+
+    bool wait_stopped(std::chrono::milliseconds timeout) {
+        std::unique_lock lifecycle_lock(lifecycle_mutex_);
+        return lifecycle_cv_.wait_for(
+            lifecycle_lock, timeout, [this] { return ready_ && !running_; });
+    }
+
+private:
+    static LRESULT CALLBACK window_proc(HWND window, UINT message,
+                                        WPARAM wparam, LPARAM lparam) {
+        if (message == WM_NCCREATE) {
+            const auto* create =
+                reinterpret_cast<const CREATESTRUCTW*>(lparam);
+            SetWindowLongPtrW(
+                window, GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        }
+
+        auto* worker = reinterpret_cast<NotificationWorker*>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (worker == nullptr) {
+            return DefWindowProcW(window, message, wparam, lparam);
+        }
+
+        switch (message) {
+        case kNotifyMessage:
+            worker->handle_notify(
+                window, *reinterpret_cast<NotifyRequest*>(lparam));
+            return 0;
+        case kDrainMessage:
+            worker->draining_ = true;
+            if (!worker->icon_added_) {
+                worker->request_stop(window);
+            }
+            return 0;
+        case kShutdownMessage:
+            worker->remove_icon(window);
+            worker->request_stop(window);
+            return 0;
+        case WM_TIMER:
+            if (wparam == kCleanupTimerId) {
+                worker->remove_icon(window);
+                if (worker->draining_) {
+                    worker->request_stop(window);
+                }
+            }
+            return 0;
+        case WM_NCDESTROY:
+            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+            break;
+        default:
+            break;
+        }
+        return DefWindowProcW(window, message, wparam, lparam);
+    }
+
+    HWND window_handle() {
+        std::lock_guard lifecycle_lock(lifecycle_mutex_);
+        return running_ ? window_ : nullptr;
+    }
+
     void signal_worker_state(HWND window, bool running) {
         {
             std::lock_guard lifecycle_lock(lifecycle_mutex_);
@@ -208,6 +191,15 @@ private:
             ready_ = true;
         }
         lifecycle_cv_.notify_all();
+    }
+
+    void request_stop(HWND window) {
+        if (stop_requested_) {
+            return;
+        }
+        stop_requested_ = true;
+        DestroyWindow(window);
+        PostQuitMessage(0);
     }
 
     void handle_notify(HWND window, NotifyRequest& request) {
@@ -260,14 +252,116 @@ private:
         icon_added_ = false;
     }
 
-    std::mutex operation_mutex_;
     std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_cv_;
-    std::thread worker_;
     HWND window_{nullptr};
     bool ready_{false};
     bool running_{false};
-    bool icon_added_{false};  // accessed only by the notification worker
+    bool icon_added_{false};       // accessed only by the notification worker
+    bool draining_{false};         // accessed only by the notification worker
+    bool stop_requested_{false};   // accessed only by the notification worker
+};
+
+class NotificationService {
+public:
+    ~NotificationService() { shutdown_immediate(); }
+
+    Result<void> notify(std::wstring_view title, std::wstring_view body,
+                        NotificationKind kind) {
+        std::lock_guard operation_lock(operation_mutex_);
+        const auto worker = ensure_worker();
+        if (!worker) {
+            return std::unexpected(Error::make(
+                ErrorCode::OsError, "notification worker startup failed",
+                ERROR_GEN_FAILURE));
+        }
+
+        NotifyRequest request{std::wstring(title), std::wstring(body), kind,
+                              std::nullopt};
+        if (!worker->post_notify(request) || !request.result) {
+            return std::unexpected(Error::make(
+                ErrorCode::OsError, "notification worker did not respond",
+                ERROR_GEN_FAILURE));
+        }
+        return std::move(*request.result);
+    }
+
+    void drain() {
+        std::lock_guard operation_lock(operation_mutex_);
+        const auto worker = worker_state_;
+        if (!worker) {
+            return;
+        }
+
+        if (!worker->running()) {
+            finish_worker(false);
+            return;
+        }
+        if (!worker->post_drain()) {
+            abandon_worker();
+            return;
+        }
+        if (!worker->wait_stopped(kDrainTimeout)) {
+            (void)worker->post_shutdown();
+            abandon_worker();
+            return;
+        }
+        finish_worker(false);
+    }
+
+    void shutdown_immediate() {
+        std::lock_guard operation_lock(operation_mutex_);
+        const auto worker = worker_state_;
+        if (!worker) {
+            return;
+        }
+        if (worker->running()) {
+            (void)worker->post_shutdown();
+        }
+        if (!worker->wait_stopped(kShutdownWait)) {
+            abandon_worker();
+            return;
+        }
+        finish_worker(false);
+    }
+
+private:
+    std::shared_ptr<NotificationWorker> ensure_worker() {
+        if (worker_state_) {
+            if (worker_state_->running()) {
+                return worker_state_;
+            }
+            finish_worker(false);
+        }
+
+        auto worker = std::make_shared<NotificationWorker>();
+        worker_state_ = worker;
+        worker_thread_ = std::thread([worker] { worker->run(); });
+        if (worker->wait_ready()) {
+            return worker;
+        }
+        finish_worker(false);
+        return nullptr;
+    }
+
+    void finish_worker(bool detach) {
+        std::thread thread = std::move(worker_thread_);
+        worker_state_.reset();
+        if (!thread.joinable()) {
+            return;
+        }
+        if (detach) {
+            thread.detach();
+        } else {
+            thread.join();
+        }
+    }
+
+    void abandon_worker() { finish_worker(true); }
+
+    std::mutex operation_mutex_;
+    std::shared_ptr<NotificationWorker> worker_state_;
+    std::thread worker_thread_;
 };
 
 NotificationService& notification_service() {
@@ -282,7 +376,9 @@ Result<void> notify(std::wstring_view title, std::wstring_view body,
     return notification_service().notify(title, body, kind);
 }
 
-void cleanup_notifications() { notification_service().cleanup(); }
+void drain_notifications() { notification_service().drain(); }
+
+void cleanup_notifications() { notification_service().shutdown_immediate(); }
 
 void notify_best_effort(const NotificationFunction& function,
                         std::wstring_view title, std::wstring_view body,
