@@ -17,12 +17,17 @@
 namespace hoyoflux::win32 {
 
 // Absolute paths to each located game executable, verified to exist on disk.
-// Empty optionals mean the channel was not found.
+// Empty optionals mean no usable executable was found; the registered flags
+// distinguish an absent channel from a launcher entry with a missing file.
 struct LauncherPaths {
     std::optional<std::filesystem::path> genshin_cn;       // YuanShen.exe
     std::optional<std::filesystem::path> genshin_global;   // GenshinImpact.exe
     std::optional<std::filesystem::path> starrail_cn;      // StarRail.exe
     std::optional<std::filesystem::path> starrail_global;  // StarRail.exe
+    // True when a channel has a GameInstallPath value even if its executable
+    // is missing. Doctor uses this to distinguish absent from corrupt.
+    bool genshin_registered{false};
+    bool starrail_registered{false};
 };
 
 // Scan both launcher trees (miHoYo for CN, Cognosphere for Global), probing

@@ -3,6 +3,7 @@
 #include <toml++/toml.hpp>
 
 #include <fstream>
+#include <initializer_list>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -12,7 +13,7 @@
 namespace hoyoflux::profile {
 namespace {
 
-constexpr int kCurrentPresetRevision = 2;
+constexpr int kCurrentPresetRevision = 3;
 
 Profile make_profile_template(std::string id, GameId game) {
     Profile profile;
@@ -306,6 +307,67 @@ Result<toml::table> parse_document(std::string_view toml_text) {
     return true;
 }
 
+[[nodiscard]] bool has_exact_keys(
+    const toml::table& table,
+    std::initializer_list<std::string_view> expected_keys) {
+    if (table.size() != expected_keys.size()) {
+        return false;
+    }
+    for (const auto key : expected_keys) {
+        if (table.get(key) == nullptr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool is_legacy_xiaomi_profile(const toml::table& profile) {
+    // This is the exact revision-2 built-in shape. Any extra key or changed
+    // value means the user owns the profile and it must not be overwritten.
+    if (!has_exact_keys(profile, {"game", "render", "runtime", "ui"})) {
+        return false;
+    }
+    const auto* game = profile.get("game");
+    if (game == nullptr || !game->is_string() ||
+        game->value<std::string>() != std::optional<std::string>{"genshin"}) {
+        return false;
+    }
+
+    const auto* render_node = profile.get("render");
+    if (render_node == nullptr || !render_node->is_table() ||
+        !has_exact_keys(*render_node->as_table(), {"resolution", "persistence"})) {
+        return false;
+    }
+    const auto& render = *render_node->as_table();
+    const auto resolution = opt_string(render, "resolution");
+    const auto persistence = opt_string(render, "persistence");
+    if (!resolution || *resolution != "1220x2712" || !persistence ||
+        *persistence != "session") {
+        return false;
+    }
+
+    const auto* runtime_node = profile.get("runtime");
+    if (runtime_node == nullptr || !runtime_node->is_table() ||
+        !has_exact_keys(*runtime_node->as_table(), {"fps"})) {
+        return false;
+    }
+    const auto& runtime = *runtime_node->as_table();
+    const auto fps = opt_int(runtime, "fps");
+    if (!fps || *fps != 120) {
+        return false;
+    }
+
+    const auto* ui_node = profile.get("ui");
+    if (ui_node == nullptr || !ui_node->is_table() ||
+        !has_exact_keys(*ui_node->as_table(), {"mobile_ui", "dpi_scale"})) {
+        return false;
+    }
+    const auto& ui = *ui_node->as_table();
+    const auto mobile_ui = opt_bool(ui, "mobile_ui");
+    const auto dpi_scale = opt_double(ui, "dpi_scale");
+    return mobile_ui && *mobile_ui && dpi_scale && *dpi_scale == 2.75;
+}
+
 void add_default_launcher(toml::table& root) {
     toml::table launcher;
     launcher.insert("game", std::string{"genshin"});
@@ -339,6 +401,28 @@ void migrate_legacy_ipad(toml::table& root) {
     match.insert_or_assign("priority", 100);
 }
 
+void migrate_legacy_xiaomi(toml::table& root) {
+    auto* profiles_node = root.get("profiles");
+    if (profiles_node == nullptr || !profiles_node->is_table()) {
+        return;
+    }
+    auto* xiaomi_node = profiles_node->as_table()->get("xiaomi");
+    if (xiaomi_node == nullptr || !xiaomi_node->is_table() ||
+        !is_legacy_xiaomi_profile(*xiaomi_node->as_table())) {
+        return;
+    }
+
+    auto& xiaomi = *xiaomi_node->as_table();
+    toml::table match;
+    match.insert("auto_select", true);
+    match.insert("resolution", std::string{"2656x1220"});
+    match.insert("priority", 100);
+    xiaomi.insert_or_assign("match", std::move(match));
+
+    auto& render = *xiaomi.get("render")->as_table();
+    render.insert_or_assign("resolution", std::string{"2656x1220"});
+}
+
 [[nodiscard]] std::filesystem::path sibling_path(
     const std::filesystem::path& path, std::wstring_view suffix) {
     const auto parent = path.parent_path().empty() ? std::filesystem::path{"."}
@@ -346,8 +430,10 @@ void migrate_legacy_ipad(toml::table& root) {
     return parent / (path.filename().wstring() + std::wstring{suffix});
 }
 
-Result<void> create_migration_backup(const std::filesystem::path& path) {
-    const auto backup = sibling_path(path, L".bak.v1");
+Result<void> create_migration_backup(const std::filesystem::path& path,
+                                     int revision) {
+    const auto backup = sibling_path(
+        path, L".bak.v" + std::to_wstring(revision));
     std::error_code ec;
     if (std::filesystem::exists(backup, ec)) {
         if (ec) {
@@ -441,7 +527,7 @@ Result<Config> parse_config_root(const toml::table& root) {
                 ErrorCode::ConfigParseFailed,
                 "unsupported preset revision " +
                     std::to_string(static_cast<long long>(value)) +
-                    " (this build understands revisions 1-2); update HoyoFlux"));
+                    " (this build understands revisions 1-3); update HoyoFlux"));
         }
         config.preset_revision = static_cast<int>(value);
     }
@@ -516,7 +602,7 @@ Result<Config> parse_config_root(const toml::table& root) {
 std::string default_config_toml() {
     return R"(# HoyoFlux configuration. See `hoyoflux profile list` for the parsed view.
 schema = 1
-preset_revision = 2
+preset_revision = 3
 default_profile = "desktop"
 
 [launcher]
@@ -568,8 +654,13 @@ dpi_scale = 2.0
 [profiles.xiaomi]
 game = "genshin"
 
+[profiles.xiaomi.match]
+auto_select = true
+resolution = "2656x1220"
+priority = 100
+
 [profiles.xiaomi.render]
-resolution = "1220x2712"
+resolution = "2656x1220"
 persistence = "session"
 
 [profiles.xiaomi.runtime]
@@ -646,16 +737,22 @@ Result<Config> load_config(const std::filesystem::path& path) {
     }
 
     auto& root = *document;
-    if (root.get("launcher") == nullptr) {
-        add_default_launcher(root);
+    const int source_revision = parsed->preset_revision;
+    if (source_revision < 2) {
+        if (root.get("launcher") == nullptr) {
+            add_default_launcher(root);
+        }
+        if (root.get("defaults") == nullptr) {
+            add_default_game_defaults(root);
+        }
+        migrate_legacy_ipad(root);
     }
-    if (root.get("defaults") == nullptr) {
-        add_default_game_defaults(root);
+    if (source_revision < 3) {
+        migrate_legacy_xiaomi(root);
     }
-    migrate_legacy_ipad(root);
     root.insert_or_assign("preset_revision", kCurrentPresetRevision);
 
-    auto backup = create_migration_backup(path);
+    auto backup = create_migration_backup(path, source_revision);
     if (!backup) {
         return std::unexpected(backup.error());
     }

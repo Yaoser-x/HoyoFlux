@@ -56,15 +56,36 @@ std::string narrow(std::wstring_view wide) {
 
 int g_failures = 0;
 
-void check(bool ok, std::string_view label, std::string_view detail) {
-    std::cout << (ok ? "[ OK ] " : "[FAIL] ") << label;
+enum class CheckStatus { Ok, Warn, Skip, Fail };
+
+std::string_view status_label(CheckStatus status) {
+    switch (status) {
+    case CheckStatus::Ok:
+        return "[ OK ] ";
+    case CheckStatus::Warn:
+        return "[WARN] ";
+    case CheckStatus::Skip:
+        return "[SKIP] ";
+    case CheckStatus::Fail:
+        return "[FAIL] ";
+    }
+    return "[FAIL] ";
+}
+
+void report(CheckStatus status, std::string_view label,
+            std::string_view detail) {
+    std::cout << status_label(status) << label;
     if (!detail.empty()) {
         std::cout << ": " << detail;
     }
     std::cout << "\n";
-    if (!ok) {
+    if (status == CheckStatus::Fail) {
         ++g_failures;
     }
+}
+
+void check(bool ok, std::string_view label, std::string_view detail) {
+    report(ok ? CheckStatus::Ok : CheckStatus::Fail, label, detail);
 }
 
 void check_system() {
@@ -80,8 +101,12 @@ void check_system() {
                       info.dwBuildNumber);
     }
     check(info.dwMajorVersion >= 10, "Windows", windows_detail);
-    check(win32::is_elevated(), "Administrator",
-          win32::is_elevated() ? "elevated" : "not elevated - launch may fail");
+    if (win32::is_elevated()) {
+        report(CheckStatus::Ok, "Administrator", "elevated");
+    } else {
+        report(CheckStatus::Warn, "Administrator",
+               "not elevated; launch will request UAC when needed");
+    }
 }
 
 void check_config() {
@@ -141,7 +166,24 @@ void check_game(GameId game) {
 
     auto install = adapter->locate_installation(game::Region::Auto);
     if (!install) {
-        check(false, game_name, install.error().message);
+        if (install.error().code == ErrorCode::ProcessNotFound) {
+            auto launcher_paths = win32::read_launcher_paths();
+            if (!launcher_paths) {
+                check(false, game_name, launcher_paths.error().message);
+            } else {
+                const bool registered = game == GameId::Genshin
+                                            ? launcher_paths->genshin_registered
+                                            : launcher_paths->starrail_registered;
+                if (registered) {
+                    check(false, game_name,
+                          "launcher registry points to a missing executable");
+                } else {
+                    report(CheckStatus::Skip, game_name, "not installed");
+                }
+            }
+        } else {
+            check(false, game_name, install.error().message);
+        }
         return;
     }
     check(true, game_name, install->exe_path.string() +
@@ -247,6 +289,7 @@ void check_game(GameId game) {
 }  // namespace
 
 int run_doctor(bool /*verbose*/) {
+    g_failures = 0;
     std::cout << "HoyoFlux Doctor " << HOYOFLUX_VERSION_STRING << "\n\n";
 
     std::cout << "System\n";

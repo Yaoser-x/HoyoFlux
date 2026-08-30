@@ -16,7 +16,9 @@ hoyoflux-cli.cmd profile match genshin   # 解释显示器匹配与 fallback
 hoyoflux-cli.cmd state-dump genshin
 ```
 
-无参数双击 `HoyoFlux.exe` 会按 `[launcher]` 读取本次显示环境，优先选择明确命中的移动设备 Profile；没有命中时使用 `[defaults].genshin`（内置为 `desktop`）。Auto 每次重新判断，不保存上次选择。iPad mini 7 的内置匹配条件是 Windows 当前显示模式 `2266x1488`；Xiaomi 只预置渲染参数，在用 `profile match genshin` 或 `doctor` 观察到远程软件实际暴露的 Windows 模式前，不猜测 `match.resolution`。
+无参数双击 `HoyoFlux.exe` 会按 `[launcher]` 读取本次显示环境，优先选择明确命中的移动设备 Profile；没有命中时使用 `[defaults].genshin`（内置为 `desktop`）。Auto 每次重新判断，不保存上次选择。iPad mini 7 的内置匹配条件是 Windows 当前显示模式 `2266x1488`；Xiaomi 的内置 Auto 条件是 `2656x1220`，渲染分辨率为 `2656x1220`、运行帧率为 `120 FPS`。
+
+生产 EXE 保持 `asInvoker`。无参数 One-click 和 `launch` 在确实需要时自动请求 UAC，并同步等待提升后的子进程；`doctor`、`profile`、`version`、`state-dump` 等只读命令不会因未管理员运行而失败。UAC 取消时 One-click 安静退出，CLI 输出 `elevation cancelled` 并返回非零码。
 
 ```toml
 [launcher]
@@ -34,6 +36,7 @@ starrail = "starrail_desktop"
 
 - 从 HoYoPlay 注册表安装路径启动国服或国际服原神／崩坏：星穹铁道。
 - 对单次游戏会话应用一个**配置档（profile）**。配置档声明的每项功能都会映射到一项能力；若适配器无法满足，启动会在游戏进程创建前明确失败，不会静默跳过。`hoyoflux doctor` 会输出同一份能力报告。
+- `hoyoflux doctor` 会区分 `[ OK ]`、`[WARN]`、`[SKIP]` 和 `[FAIL]`；未安装的可选游戏与未提升权限分别是跳过和警告，不会单独导致 Doctor 失败。
 - 会话级分辨率：启动前快照游戏持久化设置；运行期间通过事件驱动的 `RegNotifyChangeKeyValue` 守护（无轮询）；退出后恢复。
 - 崩溃安全：schema 2 Journal 保存回滚状态；下次运行会先恢复并验证，成功后才删除 Journal。恢复失败时保留 Journal 以便重试。
 - 游戏运行期间提供运行时控制：省电模式通过前台窗口事件响应（不轮询），每次只写入四字节；热键（END 切换、Ctrl+Up/Down）通过会话 FPS 通道调节帧率。关闭省电模式时**不会注册任何监听器**，HoyoFlux 无法在 Alt-Tab 时影响 FPS。
@@ -63,7 +66,7 @@ starrail = "starrail_desktop"
 
 ## 项目范围
 
-仅支持 Windows x64。生产 EXE 是无主窗口的 Windows 应用：双击执行 One-click，携带显式参数时附加父控制台并保留 CLI。随包提供的 `hoyoflux-cli.cmd` 用 `start /wait` 包装显式 CLI，确保 PowerShell 等待 GUI 子系统 EXE 完成；直接调用 EXE 仍可用于交互式调试。当前不提供 GUI 设置编辑器、托盘交互、在线签名更新、驱动、通用 DLL 注入器或反作弊规避功能。
+仅支持 Windows x64。生产 EXE 是无主窗口的 Windows 应用：双击执行 One-click，携带显式参数时附加父控制台并保留 CLI。随包提供的 `hoyoflux-cli.cmd` 用 `start /wait` 包装显式 CLI，确保 PowerShell 等待 GUI 子系统 EXE 完成；直接调用 EXE 仍可用于交互式调试。通知图标只在会话期间存在，结束时会清理，不提供托盘交互。当前不提供 GUI 设置编辑器、在线签名更新、驱动、通用 DLL 注入器或反作弊规避功能。
 
 ## 构建
 

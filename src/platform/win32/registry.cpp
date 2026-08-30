@@ -21,8 +21,22 @@ constexpr std::wstring_view kGenshinGlobalExe = L"GenshinImpact.exe";
 constexpr std::wstring_view kStarRailExe = L"StarRail.exe";
 
 std::string utf8(std::wstring_view w) {
-    // Narrow only for diagnostics; ASCII in practice.
-    return {w.begin(), w.end()};
+    if (w.empty()) {
+        return {};
+    }
+    const int size = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()),
+        nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return "<invalid UTF-16>";
+    }
+    std::string result(static_cast<size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(),
+                            static_cast<int>(w.size()), result.data(), size,
+                            nullptr, nullptr) <= 0) {
+        return "<invalid UTF-16>";
+    }
+    return result;
 }
 
 // RAII for a registry key (RegCloseKey, not CloseHandle).
@@ -106,12 +120,13 @@ struct Channel {
     std::wstring_view subkey;                      // e.g. L"hk4e_cn"
     std::wstring_view exe_name;                    // e.g. L"YuanShen.exe"
     std::optional<std::filesystem::path>* target;  // where to store the result
+    bool* registered;                               // registry value exists
 };
 
 // Scan one launcher root (CN or Global). Verifies the exe exists before
 // storing anything.
-void scan_launcher_root(std::wstring_view root, std::span<const Channel> channels,
-                        LauncherPaths& /*out*/) {
+Result<void> scan_launcher_root(std::wstring_view root,
+                                std::span<const Channel> channels) {
     for (unsigned v = 0; v < 10; ++v) {
         const std::wstring version_key =
             std::wstring(root) + L"\\1_" + std::to_wstring(v);
@@ -123,9 +138,13 @@ void scan_launcher_root(std::wstring_view root, std::span<const Channel> channel
                 version_key + L"\\" + std::wstring(channel.subkey);
             auto path = read_registry_string(HKEY_CURRENT_USER, full_key,
                                              kGameInstallPath);
-            if (!path.has_value() || !path->has_value()) {
-                continue;  // read error or channel not present
+            if (!path) {
+                return std::unexpected(path.error());
             }
+            if (!path->has_value()) {
+                continue;  // channel not present
+            }
+            *channel.registered = true;
             std::filesystem::path exe = **path;
             exe /= std::wstring(channel.exe_name);
             if (GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -133,6 +152,7 @@ void scan_launcher_root(std::wstring_view root, std::span<const Channel> channel
             }
         }
     }
+    return {};
 }
 
 }  // namespace
@@ -141,16 +161,26 @@ Result<LauncherPaths> read_launcher_paths() {
     LauncherPaths paths;
 
     const Channel cn_channels[] = {
-        {L"hk4e_cn", kGenshinCnExe, &paths.genshin_cn},
-        {L"hkrpg_cn", kStarRailExe, &paths.starrail_cn},
+        {L"hk4e_cn", kGenshinCnExe, &paths.genshin_cn,
+         &paths.genshin_registered},
+        {L"hkrpg_cn", kStarRailExe, &paths.starrail_cn,
+         &paths.starrail_registered},
     };
-    scan_launcher_root(kCnLauncherRoot, cn_channels, paths);
+    if (auto result = scan_launcher_root(kCnLauncherRoot, cn_channels);
+        !result) {
+        return std::unexpected(result.error());
+    }
 
     const Channel global_channels[] = {
-        {L"hk4e_global", kGenshinGlobalExe, &paths.genshin_global},
-        {L"hkrpg_global", kStarRailExe, &paths.starrail_global},
+        {L"hk4e_global", kGenshinGlobalExe, &paths.genshin_global,
+         &paths.genshin_registered},
+        {L"hkrpg_global", kStarRailExe, &paths.starrail_global,
+         &paths.starrail_registered},
     };
-    scan_launcher_root(kGlobalLauncherRoot, global_channels, paths);
+    if (auto result = scan_launcher_root(kGlobalLauncherRoot, global_channels);
+        !result) {
+        return std::unexpected(result.error());
+    }
 
     return paths;
 }

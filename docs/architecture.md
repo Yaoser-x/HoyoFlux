@@ -46,7 +46,7 @@ platform   scan
 - **TOML 配置只解析一次。** 配置解析不进入热路径。
 - **统一 UTF-8。** 旧项目使用 UTF-16LE 源文件，本项目全部采用 UTF-8。
 - **Auto 是无状态决策。** 显示事实只采集一次，匹配按 `(specificity, priority)` 排序；同秩候选报错，无匹配时使用 per-game fallback，不保存上次 Profile。
-- **单一启动路径。** One-click 与 CLI 都先经 `LaunchService` 解析 Profile 和覆盖项，再调用未经侵入修改的 `SessionEngine`。通知是 best-effort，不参与会话成败。生产 `HoyoFlux.exe` 保持 Windows subsystem；随包的 `hoyoflux-cli.cmd` 通过 `start /wait` 提供 PowerShell 的同步 CLI 调用，不增加第二个 EXE，也不影响无参数 One-click 静默启动。
+- **单一启动路径。** One-click 与 CLI 都先经 `LaunchService` 解析 Profile 和覆盖项，再调用未经侵入修改的 `SessionEngine`。需要启动的入口在解析配置前通过 `ShellExecuteExW(runas)` 按需提权，父进程等待 elevated child 并原样传播退出码；只读命令不提权。通知是 best-effort，不参与会话成败，并在会话结束时发送 `NIM_DELETE` 清理临时图标。生产 `HoyoFlux.exe` 保持 Windows subsystem；随包的 `hoyoflux-cli.cmd` 通过 `start /wait` 提供 PowerShell 的同步 CLI 调用，不增加第二个 EXE，也不影响无参数 One-click 静默启动。
 
 ## 会话生命周期
 

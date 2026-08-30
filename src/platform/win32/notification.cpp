@@ -9,11 +9,24 @@
 namespace hoyoflux::win32 {
 namespace {
 
+struct NotificationState {
+    HWND window{nullptr};
+    bool added{false};
+};
+
+NotificationState& notification_state() {
+    static NotificationState state;
+    return state;
+}
+
 HWND notification_window() {
-    static HWND window = CreateWindowExW(
-        0, L"STATIC", L"HoyoFlux notification owner", 0, 0, 0, 0, 0,
-        HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
-    return window;
+    auto& state = notification_state();
+    if (state.window == nullptr || !IsWindow(state.window)) {
+        state.window = CreateWindowExW(
+            0, L"STATIC", L"HoyoFlux notification owner", 0, 0, 0, 0, 0,
+            HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+    }
+    return state.window;
 }
 
 void copy_text(wchar_t* destination, size_t capacity, std::wstring_view text) {
@@ -44,14 +57,30 @@ Result<void> notify(std::wstring_view title, std::wstring_view body,
                                                                : NIIF_INFO);
     copy_text(data.szInfoTitle, std::size(data.szInfoTitle), title);
     copy_text(data.szInfo, std::size(data.szInfo), body);
-    static bool added = false;
-    const DWORD operation = added ? NIM_MODIFY : NIM_ADD;
+    auto& state = notification_state();
+    const DWORD operation = state.added ? NIM_MODIFY : NIM_ADD;
     if (!Shell_NotifyIconW(operation, &data)) {
         return std::unexpected(Error::make(
             ErrorCode::OsError, "Shell_NotifyIconW failed", GetLastError()));
     }
-    added = true;
+    state.added = true;
     return {};
+}
+
+void cleanup_notifications() {
+    auto& state = notification_state();
+    if (state.added && state.window != nullptr && IsWindow(state.window)) {
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = state.window;
+        data.uID = 1;
+        (void)Shell_NotifyIconW(NIM_DELETE, &data);
+    }
+    state.added = false;
+    if (state.window != nullptr && IsWindow(state.window)) {
+        DestroyWindow(state.window);
+    }
+    state.window = nullptr;
 }
 
 void notify_best_effort(const NotificationFunction& function,

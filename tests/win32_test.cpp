@@ -356,3 +356,9 @@ TEST_CASE("notification failure is explicitly best effort",
                             w32::NotificationKind::Info);
     CHECK(called);
 }
+
+TEST_CASE("notification cleanup is idempotent",
+          "[win32][notification][b1-r0]") {
+    w32::cleanup_notifications();
+    w32::cleanup_notifications();
+}

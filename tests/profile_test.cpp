@@ -20,7 +20,7 @@ TEST_CASE("default config parses into the built-in presets",
     auto config = profile::parse_config(profile::default_config_toml());
     REQUIRE(config.has_value());
     REQUIRE(config->profiles.size() == 4);
-    CHECK(config->preset_revision == 2);
+    CHECK(config->preset_revision == 3);
     CHECK(config->genshin_default == "desktop");
     CHECK(config->starrail_default == "starrail_desktop");
     CHECK(config->launcher.game == GameId::Genshin);
@@ -50,6 +50,14 @@ TEST_CASE("default config parses into the built-in presets",
     CHECK(ipad->match.resolution->height == 1488);
     CHECK_FALSE(ipad->match.portrait.has_value());
     CHECK(ipad->match.auto_select);  // legacy "match = auto" string form
+
+    auto xiaomi = profile::find_profile(*config, "xiaomi");
+    REQUIRE(xiaomi.has_value());
+    CHECK(xiaomi->match.auto_select);
+    CHECK(xiaomi->match.resolution == std::optional<Resolution>{{2656, 1220}});
+    CHECK(xiaomi->match.priority == 100);
+    CHECK(xiaomi->render.resolution == std::optional<Resolution>{{2656, 1220}});
+    CHECK(xiaomi->runtime.fps == 120);
 
     auto starrail = profile::find_profile(*config, "starrail_desktop");
     REQUIRE(starrail.has_value());
@@ -469,7 +477,7 @@ resolution = "1920x1080"
 
     auto migrated = profile::load_config(path);
     REQUIRE(migrated.has_value());
-    CHECK(migrated->preset_revision == 2);
+    CHECK(migrated->preset_revision == 3);
     CHECK(migrated->launcher.game == GameId::Genshin);
     CHECK(migrated->launcher.profile == "auto");
     CHECK(migrated->genshin_default == "desktop");
@@ -505,7 +513,7 @@ resolution = "1920x1080"
         migrated_contents << migrated_file.rdbuf();
         persisted = migrated_contents.str();
     }
-    CHECK(persisted.find("preset_revision = 2") != std::string::npos);
+    CHECK(persisted.find("preset_revision = 3") != std::string::npos);
 
     auto second_load = profile::load_config(path);
     REQUIRE(second_load.has_value());
@@ -583,7 +591,7 @@ priority = 7
 
     auto migrated = profile::load_config(path);
     REQUIRE(migrated.has_value());
-    CHECK(migrated->preset_revision == 2);
+    CHECK(migrated->preset_revision == 3);
     CHECK(migrated->launcher.game == GameId::StarRail);
     CHECK(migrated->launcher.profile == "starrail_desktop");
     CHECK(migrated->launcher.region == profile::LauncherRegion::Global);
@@ -597,6 +605,109 @@ priority = 7
     const Resolution expected_custom_mode{1234, 567};
     CHECK(*ipad->match.resolution == expected_custom_mode);
     CHECK(ipad->match.priority == 7);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("revision two built-in xiaomi preset migrates to revision three",
+          "[profile][migration][b1-r0]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_xiaomi_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    const std::string legacy = R"(
+preset_revision = 2
+
+[profiles.xiaomi]
+game = "genshin"
+
+[profiles.xiaomi.render]
+resolution = "1220x2712"
+persistence = "session"
+
+[profiles.xiaomi.runtime]
+fps = 120
+
+[profiles.xiaomi.ui]
+mobile_ui = true
+dpi_scale = 2.75
+)";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << legacy;
+    }
+
+    auto migrated = profile::load_config(path);
+    REQUIRE(migrated.has_value());
+    CHECK(migrated->preset_revision == 3);
+    auto xiaomi = profile::find_profile(*migrated, "xiaomi");
+    REQUIRE(xiaomi.has_value());
+    CHECK(xiaomi->match.auto_select);
+    CHECK(xiaomi->match.resolution == std::optional<Resolution>{{2656, 1220}});
+    CHECK(xiaomi->match.priority == 100);
+    CHECK(xiaomi->render.resolution == std::optional<Resolution>{{2656, 1220}});
+    CHECK(xiaomi->render.persistence == ResolutionPersistence::Session);
+    CHECK(xiaomi->runtime.fps == 120);
+
+    const auto backup_path = dir / "config.toml.bak.v2";
+    REQUIRE(std::filesystem::exists(backup_path));
+    {
+        std::ifstream backup_file(backup_path, std::ios::binary);
+        std::ostringstream backup_contents;
+        backup_contents << backup_file.rdbuf();
+        CHECK(backup_contents.str() == legacy);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("custom revision two xiaomi profile is not overwritten",
+          "[profile][migration][b1-r0]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_xiaomi_custom_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << R"(
+preset_revision = 2
+
+[profiles.xiaomi]
+game = "genshin"
+
+[profiles.xiaomi.match]
+auto_select = true
+resolution = "1234x567"
+priority = 7
+
+[profiles.xiaomi.render]
+resolution = "1234x567"
+persistence = "persistent"
+
+[profiles.xiaomi.runtime]
+fps = 60
+
+[profiles.xiaomi.ui]
+mobile_ui = true
+dpi_scale = 2.0
+)";
+    }
+
+    auto migrated = profile::load_config(path);
+    REQUIRE(migrated.has_value());
+    CHECK(migrated->preset_revision == 3);
+    auto xiaomi = profile::find_profile(*migrated, "xiaomi");
+    REQUIRE(xiaomi.has_value());
+    CHECK(xiaomi->match.resolution == std::optional<Resolution>{{1234, 567}});
+    CHECK(xiaomi->match.priority == 7);
+    CHECK(xiaomi->render.resolution == std::optional<Resolution>{{1234, 567}});
+    CHECK(xiaomi->render.persistence == ResolutionPersistence::Persistent);
+    CHECK(xiaomi->runtime.fps == 60);
+    CHECK(xiaomi->ui.dpi_scale == std::optional<float>{2.0f});
 
     std::filesystem::remove_all(dir);
 }
