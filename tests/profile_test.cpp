@@ -7,6 +7,9 @@
 #include <windows.h>
 
 #include <filesystem>
+#include <fstream>
+#include <optional>
+#include <sstream>
 #include <string>
 
 using namespace hoyoflux;
@@ -17,6 +20,7 @@ TEST_CASE("default config parses into the built-in presets",
     auto config = profile::parse_config(profile::default_config_toml());
     REQUIRE(config.has_value());
     REQUIRE(config->profiles.size() == 4);
+    CHECK(config->preset_revision == 2);
     CHECK(config->genshin_default == "desktop");
     CHECK(config->starrail_default == "starrail_desktop");
     CHECK(config->launcher.game == GameId::Genshin);
@@ -423,6 +427,206 @@ TEST_CASE("first run materializes config.toml (F9)", "[profile][f9]") {
     REQUIRE(reloaded.has_value());
     CHECK(reloaded->profiles.size() == config->profiles.size());
     CHECK(reloaded->default_profile == config->default_profile);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("legacy preset revision migrates without resetting user settings",
+          "[profile][migration][b1-8-4]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    const std::string legacy = R"(
+schema = 1
+default_profile = "desktop"
+
+[profiles.desktop]
+game = "genshin"
+
+[profiles.ipad]
+game = "genshin"
+[profiles.ipad.match]
+auto_select = true
+portrait = false
+
+[profiles.xiaomi]
+game = "genshin"
+[profiles.xiaomi.runtime]
+fps = 60
+
+[profiles.b1_resolution]
+game = "genshin"
+[profiles.b1_resolution.render]
+resolution = "1920x1080"
+)";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << legacy;
+    }
+
+    auto migrated = profile::load_config(path);
+    REQUIRE(migrated.has_value());
+    CHECK(migrated->preset_revision == 2);
+    CHECK(migrated->launcher.game == GameId::Genshin);
+    CHECK(migrated->launcher.profile == "auto");
+    CHECK(migrated->genshin_default == "desktop");
+    CHECK(migrated->starrail_default == "starrail_desktop");
+
+    auto ipad = profile::find_profile(*migrated, "ipad");
+    REQUIRE(ipad.has_value());
+    CHECK(ipad->match.auto_select);
+    CHECK_FALSE(ipad->match.portrait.has_value());
+    REQUIRE(ipad->match.resolution.has_value());
+    const Resolution expected_ipad_mode{2266, 1488};
+    CHECK(*ipad->match.resolution == expected_ipad_mode);
+    CHECK(ipad->match.priority == 100);
+
+    auto xiaomi = profile::find_profile(*migrated, "xiaomi");
+    REQUIRE(xiaomi.has_value());
+    CHECK(xiaomi->runtime.fps == 60);
+    CHECK(profile::find_profile(*migrated, "b1_resolution").has_value());
+
+    const auto backup_path = dir / "config.toml.bak.v1";
+    REQUIRE(std::filesystem::exists(backup_path));
+    {
+        std::ifstream backup_file(backup_path, std::ios::binary);
+        std::ostringstream backup_contents;
+        backup_contents << backup_file.rdbuf();
+        CHECK(backup_contents.str() == legacy);
+    }
+
+    std::string persisted;
+    {
+        std::ifstream migrated_file(path, std::ios::binary);
+        std::ostringstream migrated_contents;
+        migrated_contents << migrated_file.rdbuf();
+        persisted = migrated_contents.str();
+    }
+    CHECK(persisted.find("preset_revision = 2") != std::string::npos);
+
+    auto second_load = profile::load_config(path);
+    REQUIRE(second_load.has_value());
+    {
+        std::ifstream second_file(path, std::ios::binary);
+        std::ostringstream second_contents;
+        second_contents << second_file.rdbuf();
+        CHECK(second_contents.str() == persisted);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("custom ipad match rules are not rewritten by migration",
+          "[profile][migration][b1-8-4]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_custom_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << R"(
+[profiles.ipad]
+game = "genshin"
+[profiles.ipad.match]
+auto_select = true
+portrait = true
+)";
+    }
+
+    auto migrated = profile::load_config(path);
+    REQUIRE(migrated.has_value());
+    auto ipad = profile::find_profile(*migrated, "ipad");
+    REQUIRE(ipad.has_value());
+    CHECK(ipad->match.portrait == std::optional<bool>{true});
+    CHECK_FALSE(ipad->match.aspect_ratio.has_value());
+    CHECK_FALSE(ipad->match.device_name.has_value());
+    CHECK_FALSE(ipad->match.resolution.has_value());
+    CHECK(ipad->match.priority == 0);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("existing revision one launcher defaults and ipad resolution are preserved",
+          "[profile][migration][b1-8-4]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_existing_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << R"(
+[launcher]
+game = "starrail"
+profile = "starrail_desktop"
+region = "global"
+notifications = false
+
+[defaults]
+genshin = "my_desktop"
+starrail = "my_starrail"
+
+[profiles.ipad]
+game = "genshin"
+[profiles.ipad.match]
+auto_select = true
+resolution = "1234x567"
+priority = 7
+)";
+    }
+
+    auto migrated = profile::load_config(path);
+    REQUIRE(migrated.has_value());
+    CHECK(migrated->preset_revision == 2);
+    CHECK(migrated->launcher.game == GameId::StarRail);
+    CHECK(migrated->launcher.profile == "starrail_desktop");
+    CHECK(migrated->launcher.region == profile::LauncherRegion::Global);
+    CHECK_FALSE(migrated->launcher.notifications);
+    CHECK(migrated->genshin_default == "my_desktop");
+    CHECK(migrated->starrail_default == "my_starrail");
+
+    auto ipad = profile::find_profile(*migrated, "ipad");
+    REQUIRE(ipad.has_value());
+    REQUIRE(ipad->match.resolution.has_value());
+    const Resolution expected_custom_mode{1234, 567};
+    CHECK(*ipad->match.resolution == expected_custom_mode);
+    CHECK(ipad->match.priority == 7);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("migration failure leaves the original config intact",
+          "[profile][migration][b1-8-4]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_failure_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    const std::string legacy =
+        "[profiles.ipad]\ngame = \"genshin\"\n"
+        "[profiles.ipad.match]\nauto_select = true\nportrait = false\n";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << legacy;
+    }
+    std::filesystem::create_directory(dir / "config.toml.tmp");
+
+    auto result = profile::load_config(path);
+    REQUIRE_FALSE(result.has_value());
+    {
+        std::ifstream original_file(path, std::ios::binary);
+        std::ostringstream original_contents;
+        original_contents << original_file.rdbuf();
+        CHECK(original_contents.str() == legacy);
+    }
+    CHECK(std::filesystem::exists(dir / "config.toml.bak.v1"));
 
     std::filesystem::remove_all(dir);
 }

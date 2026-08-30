@@ -3,11 +3,16 @@
 #include <toml++/toml.hpp>
 
 #include <fstream>
-#include <system_error>
 #include <sstream>
+#include <system_error>
+#include <utility>
+
+#include <windows.h>
 
 namespace hoyoflux::profile {
 namespace {
+
+constexpr int kCurrentPresetRevision = 2;
 
 Profile make_profile_template(std::string id, GameId game) {
     Profile profile;
@@ -251,11 +256,267 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
     return profile;
 }
 
+Result<toml::table> parse_document(std::string_view toml_text) {
+    try {
+        return toml::parse(toml_text);
+    } catch (const toml::parse_error& error) {
+        return std::unexpected(Error::make(
+            ErrorCode::ConfigParseFailed,
+            "TOML parse error: " + std::string(error.description())));
+    }
+}
+
+[[nodiscard]] bool is_legacy_ipad_match(const toml::table& profile) {
+    const auto* game = profile.get("game");
+    if (game == nullptr || !game->is_string() ||
+        game->value<std::string>() != std::optional<std::string>{"genshin"}) {
+        return false;
+    }
+
+    const auto* match_node = profile.get("match");
+    if (match_node == nullptr || !match_node->is_table()) {
+        return false;
+    }
+    const auto& match = *match_node->as_table();
+    const auto* auto_select = match.get("auto_select");
+    const auto* portrait = match.get("portrait");
+    if (auto_select == nullptr || !auto_select->is_boolean() ||
+        !auto_select->value<bool>().value_or(false) || portrait == nullptr ||
+        !portrait->is_boolean() || portrait->value<bool>().value_or(true)) {
+        return false;
+    }
+
+    // The generated legacy preset contained only auto_select and portrait,
+    // with an optional explicit zero priority. Any extra key is treated as a
+    // user customization and is therefore left untouched.
+    if (match.size() != 2 && match.size() != 3) {
+        return false;
+    }
+    if (const auto* priority = match.get("priority")) {
+        if (!priority->is_integer() || priority->value<int64_t>().value_or(-1) != 0) {
+            return false;
+        }
+    }
+    for (const auto& [key, value] : match) {
+        (void)value;
+        if (key != "auto_select" && key != "portrait" && key != "priority") {
+            return false;
+        }
+    }
+    return true;
+}
+
+void add_default_launcher(toml::table& root) {
+    toml::table launcher;
+    launcher.insert("game", std::string{"genshin"});
+    launcher.insert("profile", std::string{"auto"});
+    launcher.insert("region", std::string{"auto"});
+    launcher.insert("notifications", true);
+    root.insert_or_assign("launcher", std::move(launcher));
+}
+
+void add_default_game_defaults(toml::table& root) {
+    toml::table defaults;
+    defaults.insert("genshin", std::string{"desktop"});
+    defaults.insert("starrail", std::string{"starrail_desktop"});
+    root.insert_or_assign("defaults", std::move(defaults));
+}
+
+void migrate_legacy_ipad(toml::table& root) {
+    auto* profiles_node = root.get("profiles");
+    if (profiles_node == nullptr || !profiles_node->is_table()) {
+        return;
+    }
+    auto* ipad_node = profiles_node->as_table()->get("ipad");
+    if (ipad_node == nullptr || !ipad_node->is_table() ||
+        !is_legacy_ipad_match(*ipad_node->as_table())) {
+        return;
+    }
+
+    auto& match = *ipad_node->as_table()->get("match")->as_table();
+    match.erase("portrait");
+    match.insert_or_assign("resolution", std::string{"2266x1488"});
+    match.insert_or_assign("priority", 100);
+}
+
+[[nodiscard]] std::filesystem::path sibling_path(
+    const std::filesystem::path& path, std::wstring_view suffix) {
+    const auto parent = path.parent_path().empty() ? std::filesystem::path{"."}
+                                                   : path.parent_path();
+    return parent / (path.filename().wstring() + std::wstring{suffix});
+}
+
+Result<void> create_migration_backup(const std::filesystem::path& path) {
+    const auto backup = sibling_path(path, L".bak.v1");
+    std::error_code ec;
+    if (std::filesystem::exists(backup, ec)) {
+        if (ec) {
+            return std::unexpected(Error::make(
+                ErrorCode::OsError,
+                "cannot inspect config backup '" + backup.string() + "': " +
+                    ec.message(),
+                static_cast<unsigned long>(ec.value())));
+        }
+        if (!std::filesystem::is_regular_file(backup, ec) || ec) {
+            return std::unexpected(Error::make(
+                ErrorCode::OsError,
+                "config backup path is not a regular file: " + backup.string(),
+                static_cast<unsigned long>(ec.value())));
+        }
+        return {};
+    }
+    if (!std::filesystem::copy_file(path, backup,
+                                    std::filesystem::copy_options::none, ec)) {
+        return std::unexpected(Error::make(
+            ErrorCode::OsError,
+            "cannot create config backup '" + backup.string() + "': " +
+                ec.message(),
+            static_cast<unsigned long>(ec.value())));
+    }
+    return {};
+}
+
+Result<void> write_migrated_document(const std::filesystem::path& path,
+                                     const toml::table& root) {
+    const auto temp = sibling_path(path, L".tmp");
+    std::ostringstream serialized;
+    serialized << root << '\n';
+    const auto text = serialized.str();
+
+    {
+        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            return std::unexpected(Error::make(
+                ErrorCode::OsError,
+                "cannot write migrated config temporary file '" +
+                    temp.string() + "'"));
+        }
+        file.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!file) {
+            return std::unexpected(Error::make(
+                ErrorCode::OsError,
+                "cannot finish migrated config temporary file '" +
+                    temp.string() + "'"));
+        }
+    }
+
+    if (!ReplaceFileW(path.c_str(), temp.c_str(), nullptr,
+                      REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
+        const auto error = GetLastError();
+        std::error_code cleanup_ec;
+        std::filesystem::remove(temp, cleanup_ec);
+        return std::unexpected(Error::make(
+            ErrorCode::OsError,
+            "cannot atomically replace config '" + path.string() + "'",
+            error));
+    }
+    return {};
+}
+
+Result<Config> parse_config_root(const toml::table& root) {
+    Config config;
+    // Forward-compatibility key (plan 18.4): absent = schema 1. A future
+    // schema bumps this and migrates old files on load.
+    if (const auto schema = root.get("schema");
+        schema && schema->is_integer()) {
+        const auto value = schema->value<int64_t>().value_or(0);
+        if (value != 1) {
+            return std::unexpected(Error::make(
+                ErrorCode::ConfigParseFailed,
+                "unsupported config schema " +
+                    std::to_string(static_cast<long long>(value)) +
+                    " (this build understands schema 1); update HoyoFlux"));
+        }
+    }
+    if (const auto preset_revision = root.get("preset_revision");
+        preset_revision != nullptr) {
+        if (!preset_revision->is_integer()) {
+            return std::unexpected(Error::make(
+                ErrorCode::ConfigParseFailed,
+                "preset_revision must be an integer"));
+        }
+        const auto value = preset_revision->value<int64_t>().value_or(0);
+        if (value < 1 || value > kCurrentPresetRevision) {
+            return std::unexpected(Error::make(
+                ErrorCode::ConfigParseFailed,
+                "unsupported preset revision " +
+                    std::to_string(static_cast<long long>(value)) +
+                    " (this build understands revisions 1-2); update HoyoFlux"));
+        }
+        config.preset_revision = static_cast<int>(value);
+    }
+    if (const auto* profiles = root.get("profiles");
+        profiles && profiles->is_table()) {
+        for (auto&& [key, value] : *profiles->as_table()) {
+            if (!value.is_table()) {
+                return std::unexpected(Error::make(
+                    ErrorCode::ProfileInvalid,
+                    "profile '" + std::string(key.str()) + "' must be a table"));
+            }
+            auto profile =
+                parse_profile(std::string(key.str()), *value.as_table());
+            if (!profile) {
+                return std::unexpected(profile.error());
+            }
+            config.profiles.push_back(std::move(*profile));
+        }
+    }
+    if (const auto* launcher = root.get("launcher");
+        launcher && launcher->is_table()) {
+        const auto& table = *launcher->as_table();
+        if (const auto game = opt_string(table, "game")) {
+            if (*game == "genshin") {
+                config.launcher.game = GameId::Genshin;
+            } else if (*game == "starrail") {
+                config.launcher.game = GameId::StarRail;
+            } else {
+                return std::unexpected(Error::make(
+                    ErrorCode::ConfigParseFailed,
+                    "launcher.game must be \"genshin\" or \"starrail\""));
+            }
+        }
+        if (const auto profile = opt_string(table, "profile")) {
+            config.launcher.profile = *profile;
+        }
+        if (const auto region = opt_string(table, "region")) {
+            if (*region == "auto") {
+                config.launcher.region = LauncherRegion::Auto;
+            } else if (*region == "cn") {
+                config.launcher.region = LauncherRegion::Cn;
+            } else if (*region == "global") {
+                config.launcher.region = LauncherRegion::Global;
+            } else {
+                return std::unexpected(Error::make(
+                    ErrorCode::ConfigParseFailed,
+                    "launcher.region must be auto|cn|global"));
+            }
+        }
+        if (const auto notifications = opt_bool(table, "notifications")) {
+            config.launcher.notifications = *notifications;
+        }
+    }
+    if (const auto* default_profile = root.get("default_profile");
+        default_profile && default_profile->is_string()) {
+        config.default_profile = *default_profile->value<std::string>();
+    }
+    if (const auto* defaults = root.get("defaults");
+        defaults && defaults->is_table()) {
+        if (const auto value = opt_string(*defaults->as_table(), "genshin")) {
+            config.genshin_default = *value;
+        }
+        if (const auto value = opt_string(*defaults->as_table(), "starrail")) {
+            config.starrail_default = *value;
+        }
+    }
+    return config;
+}
+
 }  // namespace
 
 std::string default_config_toml() {
     return R"(# HoyoFlux configuration. See `hoyoflux profile list` for the parsed view.
 schema = 1
+preset_revision = 2
 default_profile = "desktop"
 
 [launcher]
@@ -327,91 +588,11 @@ fps = 120
 }
 
 Result<Config> parse_config(std::string_view toml_text) {
-    toml::table root;
-    try {
-        root = toml::parse(toml_text);
-    } catch (const toml::parse_error& error) {
-        return std::unexpected(Error::make(
-            ErrorCode::ConfigParseFailed,
-            "TOML parse error: " + std::string(error.description())));
+    auto parsed = parse_document(toml_text);
+    if (!parsed) {
+        return std::unexpected(parsed.error());
     }
-
-    Config config;
-    // Forward-compatibility key (plan 18.4): absent = schema 1. A future
-    // schema bumps this and migrates old files on load.
-    if (const auto schema = root.get("schema");
-        schema && schema->is_integer()) {
-        const auto value = schema->value<int64_t>().value_or(0);
-        if (value != 1) {
-            return std::unexpected(Error::make(
-                ErrorCode::ConfigParseFailed,
-                "unsupported config schema " + std::to_string(static_cast<long long>(value)) +
-                    " (this build understands schema 1); update HoyoFlux"));
-        }
-    }
-    if (const auto* profiles = root.get("profiles"); profiles && profiles->is_table()) {
-        for (auto&& [key, value] : *profiles->as_table()) {
-            if (!value.is_table()) {
-                return std::unexpected(Error::make(
-                    ErrorCode::ProfileInvalid,
-                    "profile '" + std::string(key.str()) + "' must be a table"));
-            }
-            auto profile =
-                parse_profile(std::string(key.str()), *value.as_table());
-            if (!profile) {
-                return std::unexpected(profile.error());
-            }
-            config.profiles.push_back(std::move(*profile));
-        }
-    }
-    if (const auto* launcher = root.get("launcher");
-        launcher && launcher->is_table()) {
-        const auto& table = *launcher->as_table();
-        if (const auto game = opt_string(table, "game")) {
-            if (*game == "genshin") {
-                config.launcher.game = GameId::Genshin;
-            } else if (*game == "starrail") {
-                config.launcher.game = GameId::StarRail;
-            } else {
-                return std::unexpected(Error::make(
-                    ErrorCode::ConfigParseFailed,
-                    "launcher.game must be \"genshin\" or \"starrail\""));
-            }
-        }
-        if (const auto profile = opt_string(table, "profile")) {
-            config.launcher.profile = *profile;
-        }
-        if (const auto region = opt_string(table, "region")) {
-            if (*region == "auto") {
-                config.launcher.region = LauncherRegion::Auto;
-            } else if (*region == "cn") {
-                config.launcher.region = LauncherRegion::Cn;
-            } else if (*region == "global") {
-                config.launcher.region = LauncherRegion::Global;
-            } else {
-                return std::unexpected(Error::make(
-                    ErrorCode::ConfigParseFailed,
-                    "launcher.region must be auto|cn|global"));
-            }
-        }
-        if (const auto notifications = opt_bool(table, "notifications")) {
-            config.launcher.notifications = *notifications;
-        }
-    }
-    if (const auto* default_profile = root.get("default_profile");
-        default_profile && default_profile->is_string()) {
-        config.default_profile = *default_profile->value<std::string>();
-    }
-    if (const auto* defaults = root.get("defaults");
-        defaults && defaults->is_table()) {
-        if (const auto value = opt_string(*defaults->as_table(), "genshin")) {
-            config.genshin_default = *value;
-        }
-        if (const auto value = opt_string(*defaults->as_table(), "starrail")) {
-            config.starrail_default = *value;
-        }
-    }
-    return config;
+    return parse_config_root(*parsed);
 }
 
 Result<Config> load_config(const std::filesystem::path& path) {
@@ -450,7 +631,39 @@ Result<Config> load_config(const std::filesystem::path& path) {
     }
     std::ostringstream buffer;
     buffer << file.rdbuf();
-    return parse_config(buffer.str());
+    file.close();
+    const auto original = buffer.str();
+    auto document = parse_document(original);
+    if (!document) {
+        return std::unexpected(document.error());
+    }
+    auto parsed = parse_config_root(*document);
+    if (!parsed) {
+        return std::unexpected(parsed.error());
+    }
+    if (parsed->preset_revision >= kCurrentPresetRevision) {
+        return parsed;
+    }
+
+    auto& root = *document;
+    if (root.get("launcher") == nullptr) {
+        add_default_launcher(root);
+    }
+    if (root.get("defaults") == nullptr) {
+        add_default_game_defaults(root);
+    }
+    migrate_legacy_ipad(root);
+    root.insert_or_assign("preset_revision", kCurrentPresetRevision);
+
+    auto backup = create_migration_backup(path);
+    if (!backup) {
+        return std::unexpected(backup.error());
+    }
+    auto written = write_migrated_document(path, root);
+    if (!written) {
+        return std::unexpected(written.error());
+    }
+    return parse_config_root(root);
 }
 
 Result<Profile> find_profile(const Config& config, std::string_view id) {

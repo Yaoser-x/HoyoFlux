@@ -7,6 +7,7 @@
 // Schema (all fields optional; missing values keep the defaults below):
 //
 //   default_profile = "desktop"
+//   preset_revision = 2       # built-in preset evolution, not data schema
 //
 //   [profiles.desktop.render]
 //   resolution = "2560x1440"     # "WxH"; absent = leave as-is
@@ -70,6 +71,7 @@ struct Config {
     std::string genshin_default;
     std::string starrail_default;
     LauncherConfig launcher;
+    int preset_revision{1};  // built-in preset evolution; absent in legacy files
 };
 
 struct DisplayFacts {

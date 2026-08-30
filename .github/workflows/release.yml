@@ -42,6 +42,8 @@ jobs:
           $version = git describe --tags --always
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item build/release/src/app/hoyoflux.exe "dist/hoyoflux-$version.exe"
+          Copy-Item build/release/src/app/hoyoflux.exe dist/hoyoflux.exe
+          Copy-Item src/app/hoyoflux-cli.cmd dist/
           Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md, docs/compatibility-matrix.md dist/
           $hash = (Get-FileHash "dist/hoyoflux-$version.exe" -Algorithm SHA256).Hash
           "$hash  hoyoflux-$version.exe" | Out-File -Encoding ascii "dist/SHA256SUMS.txt"

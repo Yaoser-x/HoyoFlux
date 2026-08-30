@@ -8,12 +8,12 @@ HoyoFlux 是对经典原神／崩坏：星穹铁道 FPS 解锁工具的独立重
 
 ```text
 hoyoflux.exe                                      # 无界面 Auto 一键启动原神
-hoyoflux launch genshin --profile desktop
-hoyoflux launch genshin --profile ipad
-hoyoflux launch starrail --profile auto -- -popupwindow   # -- 后为透传参数
-hoyoflux doctor        # 只读环境与能力报告
-hoyoflux profile match genshin   # 解释显示器匹配与 fallback
-hoyoflux state-dump genshin
+hoyoflux-cli.cmd launch genshin --profile desktop  # PowerShell 同步 CLI
+hoyoflux-cli.cmd launch genshin --profile ipad
+hoyoflux-cli.cmd launch starrail --profile auto -- -popupwindow   # -- 后为透传参数
+hoyoflux-cli.cmd doctor        # 只读环境与能力报告
+hoyoflux-cli.cmd profile match genshin   # 解释显示器匹配与 fallback
+hoyoflux-cli.cmd state-dump genshin
 ```
 
 无参数双击 `HoyoFlux.exe` 会按 `[launcher]` 读取本次显示环境，优先选择明确命中的移动设备 Profile；没有命中时使用 `[defaults].genshin`（内置为 `desktop`）。Auto 每次重新判断，不保存上次选择。iPad mini 7 的内置匹配条件是 Windows 当前显示模式 `2266x1488`；Xiaomi 只预置渲染参数，在用 `profile match genshin` 或 `doctor` 观察到远程软件实际暴露的 Windows 模式前，不猜测 `match.resolution`。
@@ -63,7 +63,7 @@ starrail = "starrail_desktop"
 
 ## 项目范围
 
-仅支持 Windows x64。生产 EXE 是无主窗口的 Windows 应用：双击执行 One-click，携带显式参数时附加父控制台并保留 CLI。当前不提供 GUI 设置编辑器、托盘交互、在线签名更新、驱动、通用 DLL 注入器或反作弊规避功能。
+仅支持 Windows x64。生产 EXE 是无主窗口的 Windows 应用：双击执行 One-click，携带显式参数时附加父控制台并保留 CLI。随包提供的 `hoyoflux-cli.cmd` 用 `start /wait` 包装显式 CLI，确保 PowerShell 等待 GUI 子系统 EXE 完成；直接调用 EXE 仍可用于交互式调试。当前不提供 GUI 设置编辑器、托盘交互、在线签名更新、驱动、通用 DLL 注入器或反作弊规避功能。
 
 ## 构建
 

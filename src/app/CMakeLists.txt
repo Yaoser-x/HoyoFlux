@@ -31,3 +31,4 @@ target_link_libraries(hoyoflux PRIVATE
 )
 
 install(TARGETS hoyoflux RUNTIME DESTINATION bin)
+install(FILES hoyoflux-cli.cmd DESTINATION bin)
