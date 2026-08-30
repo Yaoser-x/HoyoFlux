@@ -10,15 +10,15 @@
 // profile needs no resident launcher component. Every operation below is a
 // pure external write - after the engine applies the plan the game runs on
 // its own and the launcher may exit. Hooks that must execute *inside* the
-// game (Genshin fps-set hook, verify/UI detour, il2cpp MobileUI calls) are
-// intentionally not part of this contract yet; see
-// game/genshin/genshin_adapter.cpp for the recorded deferral reasons.
+// game use an explicit lifecycle-detour operation; arbitrary remote-thread
+// invocation remains separate and is never used for Genshin Mobile UI.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -45,6 +45,11 @@ enum class PatchOperationKind {
     // its exit (wait_timeout_ms). `stub_index` refers to the InstallCodeStub
     // operations earlier in the same plan.
     InvokeBootstrap,
+
+    // Redirect a lifecycle CALL rel32 at `address` (its displacement field)
+    // to a near executable stub. The stub calls `target_address` (the
+    // original callee) and internally disables its payload after one hit.
+    InstallOneShotDetour,
 };
 
 // Where an operation's target lives. RemoteStateFps refers to the fps slot
@@ -58,7 +63,8 @@ enum class PatchTargetSymbol : unsigned char {
 struct PatchOperation {
     PatchOperationKind kind{PatchOperationKind::WriteBytes};
     uintptr_t address{0};
-    std::vector<std::byte> data;  // WriteBytes / InstallCodeStub payload
+    // WriteBytes / InstallCodeStub / InstallOneShotDetour payload.
+    std::vector<std::byte> data;
 
     // F10: when non-empty, the engine reads the remote bytes first and
     // refuses to patch unless they match exactly. A signature that matched
@@ -114,6 +120,27 @@ struct PatchOperation {
         op.wait_timeout_ms = wait_timeout_ms;
         return op;
     }
+    [[nodiscard]] static PatchOperation install_one_shot_detour(
+        uintptr_t call_disp_field, uintptr_t original_callee,
+        std::vector<std::byte> code) {
+        PatchOperation op;
+        op.kind = PatchOperationKind::InstallOneShotDetour;
+        op.address = call_disp_field;
+        op.target_address = original_callee;
+        op.data = std::move(code);
+        return op;
+    }
+};
+
+struct MobileUiDiagnostic {
+    std::string variant;
+    uintptr_t grph_class_global{0};
+    int32_t grph_ui_offset{0};
+    int32_t grph_input_offset{0};
+    uintptr_t func_gui_set{0};
+    uintptr_t func_input_set{0};
+    uintptr_t lifecycle_call_disp{0};
+    uintptr_t lifecycle_original_callee{0};
 };
 
 // Flags for RemoteStateLayout::initial_flags.
@@ -147,6 +174,7 @@ struct PatchPlan {
     // redirect), the address a resident controller writes profile fps to.
     // Empty = the plan has no dynamic fps channel (e.g. fps redirect only).
     std::optional<uintptr_t> fps_direct_address;
+    std::optional<MobileUiDiagnostic> mobile_ui_diagnostic;
 };
 
 }  // namespace hoyoflux

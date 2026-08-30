@@ -164,6 +164,15 @@ TEST_CASE("genshin mobile UI v1 has four resolvers", "[game][genshin]") {
     CHECK(*input_set == sec.remote_address + 0x30 + 4 + values[3]);
 }
 
+TEST_CASE("genshin unhooktime exposes lifecycle call and original callee",
+          "[game][genshin]") {
+    auto sig = genshin::signature(genshin::SignatureId::UnhookTime);
+    REQUIRE(sig.has_value());
+    REQUIRE(sig->resolvers.size() == 2);
+    CHECK(sig->resolvers[0].strategy == scan::ResolveStrategy::FieldDisp);
+    CHECK(sig->resolvers[1].strategy == scan::ResolveStrategy::RipRelative);
+}
+
 TEST_CASE("direct signatures resolve to the match itself", "[game][genshin]") {
     auto sig = genshin::signature(genshin::SignatureId::PayloadOep);
     REQUIRE(sig.has_value());

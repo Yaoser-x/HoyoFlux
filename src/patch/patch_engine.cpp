@@ -164,6 +164,61 @@ Result<AppliedOperation> apply_one(const win32::UniqueHandle& process,
         }
         break;
     }
+
+    case PatchOperationKind::InstallOneShotDetour: {
+        if (runtime.near_address == 0) {
+            return std::unexpected(Error::make(
+                ErrorCode::PatchFailed,
+                "InstallOneShotDetour requires the plan's module anchor"));
+        }
+        auto base = allocate_code_near(process, runtime.near_address,
+                                       op.data.size());
+        if (!base) {
+            return std::unexpected(base.error());
+        }
+        if (!displacement_in_range(op.address, *base)) {
+            (void)free_remote(process, *base);
+            return std::unexpected(Error::make(
+                ErrorCode::PatchFailed,
+                "one-shot detour stub is out of rel32 reach"));
+        }
+        SIZE_T written = 0;
+        if (!WriteProcessMemory(process.get(), reinterpret_cast<LPVOID>(*base),
+                                op.data.data(), op.data.size(), &written) ||
+            written != op.data.size()) {
+            (void)free_remote(process, *base);
+            return std::unexpected(Error::make(
+                ErrorCode::RemoteWriteFailed,
+                "one-shot detour stub write failed", GetLastError()));
+        }
+        FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(*base),
+                              op.data.size());
+        record.allocated_base = *base;
+        stubs.push_back(AppliedStub{*base, op.data.size()});
+
+        const uintptr_t window_base = op.address & ~uintptr_t{7};
+        record.original.assign(kRedirectWindow, std::byte{0});
+        if (auto read = read_bytes(process, window_base, record.original); !read) {
+            (void)free_remote(process, *base);
+            stubs.pop_back();
+            return std::unexpected(read.error());
+        }
+        std::byte window[kRedirectWindow];
+        std::memcpy(window, record.original.data(), kRedirectWindow);
+        const int32_t disp = redirect_displacement(op.address, *base);
+        std::memcpy(window + (op.address & 7), &disp, sizeof(disp));
+        if (auto wrote = write_protected(process, window_base,
+                                         {window, kRedirectWindow});
+            !wrote) {
+            (void)free_remote(process, *base);
+            stubs.pop_back();
+            return std::unexpected(wrote.error());
+        }
+        FlushInstructionCache(process.get(),
+                              reinterpret_cast<LPCVOID>(window_base),
+                              kRedirectWindow);
+        break;
+    }
     }
     return record;
 }
@@ -174,7 +229,8 @@ Result<void> undo_one(const win32::UniqueHandle& process,
         return {};
     }
     uintptr_t address = record.op.address;
-    if (record.op.kind == PatchOperationKind::RedirectRelative) {
+    if (record.op.kind == PatchOperationKind::RedirectRelative ||
+        record.op.kind == PatchOperationKind::InstallOneShotDetour) {
         address &= ~uintptr_t{7};  // window base
     }
     auto restored = write_protected(process, address, record.original);
@@ -182,7 +238,8 @@ Result<void> undo_one(const win32::UniqueHandle& process,
         return std::unexpected(restored.error());
     }
     if (record.op.kind == PatchOperationKind::WriteBytes ||
-        record.op.kind == PatchOperationKind::RedirectRelative) {
+        record.op.kind == PatchOperationKind::RedirectRelative ||
+        record.op.kind == PatchOperationKind::InstallOneShotDetour) {
         FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(address),
                               record.original.size());
     }

@@ -152,6 +152,7 @@ int cmd_launch(const std::string& game_text, const std::string& profile_name,
 
     session::SessionConfig session_config;
     session_config.region = region;
+    session_config.verbose = verbose;
     if (exe) {
         request.exe_override = std::filesystem::path(widen(*exe));
     }
@@ -179,7 +180,9 @@ int cmd_launch(const std::string& game_text, const std::string& profile_name,
     }
     std::cout << "session " << context->id << " completed: game=" << to_string(game)
               << " profile=" << profile->id << " pid=" << context->pid
-              << " duration=" << seconds << "s\n";
+              << " exit_code=" << context->process_exit_code
+              << " game_runtime=" << (context->game_runtime_ms / 1000.0)
+              << "s duration=" << seconds << "s\n";
     return 0;
 }
 

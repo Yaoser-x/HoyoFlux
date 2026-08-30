@@ -280,6 +280,44 @@ TEST_CASE("session waits for lazily loaded modules via resume/suspend",
     CHECK(context->stage == SessionStage::Completed);
 }
 
+TEST_CASE("nonzero game exit is reported as a failed session",
+          "[session][engine]") {
+    REQUIRE(session::clear_journal().has_value());
+    StubAdapter adapter({game::ModuleRequirement{"", {".text"}, false}});
+    session::SessionEngine engine(adapter, fast_config());
+    auto request = make_request();
+    request.game_args = {
+        L"/c", L"ping -n 2 127.0.0.1 >nul & exit /b 7"};
+
+    auto context = engine.run(request);
+    REQUIRE_FALSE(context.has_value());
+    CHECK(context.error().code == ErrorCode::SessionFailed);
+    CHECK(context.error().message.find("code 7") != std::string::npos);
+    auto journal = session::load_journal();
+    REQUIRE(journal.has_value());
+    CHECK_FALSE(journal->has_value());
+}
+
+TEST_CASE("experimental mobile UI early exit is not reported completed",
+          "[session][engine][mobileui]") {
+    REQUIRE(session::clear_journal().has_value());
+    StubAdapter adapter({game::ModuleRequirement{"", {".text"}, false}});
+    session::SessionEngine engine(adapter, fast_config());
+    auto request = make_request();
+    request.profile.ui.mobile_ui = true;
+    request.game_args = {
+        L"/c", L"ping -n 2 127.0.0.1 >nul & exit /b 0"};
+
+    auto context = engine.run(request);
+    REQUIRE_FALSE(context.has_value());
+    CHECK(context.error().code == ErrorCode::SessionFailed);
+    CHECK(context.error().message.find("experimental Mobile UI") !=
+          std::string::npos);
+    auto journal = session::load_journal();
+    REQUIRE(journal.has_value());
+    CHECK_FALSE(journal->has_value());
+}
+
 TEST_CASE("failed module wait fails the session and cleans the journal",
           "[session][engine]") {
     // A DLL that cmd.exe will never load.

@@ -224,6 +224,31 @@ TEST_CASE("engine redirect resolves the RemoteState symbol", "[patch][engine]") 
     CHECK(applied->runtime.base == 0);  // state block released
 }
 
+TEST_CASE("one-shot detour redirects a lifecycle call and rolls back exactly",
+          "[patch][engine]") {
+    const auto process = self_process();
+    auto buffer = WindowBuffer::filled();
+    const auto original = buffer.raw;
+
+    PatchPlan plan;
+    plan.runtime.near_address =
+        reinterpret_cast<uintptr_t>(buffer.raw.data());
+    plan.operations.push_back(PatchOperation::install_one_shot_detour(
+        buffer.disp_field(), /*original_callee=*/0x12345678,
+        {std::byte{0xC3}}));
+
+    auto applied = patch::apply_patch_plan(process, plan);
+    REQUIRE(applied.has_value());
+    REQUIRE(applied->stubs.size() == 1);
+    const auto reached = static_cast<uintptr_t>(
+        static_cast<int64_t>(buffer.disp_field() + 4) + buffer.disp());
+    CHECK(reached == applied->stubs[0].base);
+
+    REQUIRE(patch::rollback_patch_plan(process, *applied).has_value());
+    CHECK(buffer.raw == original);
+    CHECK(applied->stubs.empty());
+}
+
 TEST_CASE("engine rolls back earlier operations when a later one fails",
           "[patch][engine]") {
     const auto process = self_process();

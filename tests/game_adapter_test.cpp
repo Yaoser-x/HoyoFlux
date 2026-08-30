@@ -740,7 +740,7 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
     signatures.push_back(resolved("genshin.mobileui.v1",
                                   {0x1000, 0x2000, 0x3000, 0x4000}));
     signatures.push_back(resolved("genshin.mobileui.input", {0x5000}));
-    signatures.push_back(resolved("genshin.unhooktime", {0x6000}));
+    signatures.push_back(resolved("genshin.unhooktime", {0x6000, 0x7000}));
 
     Profile profile;
     profile.ui.mobile_ui = true;
@@ -750,9 +750,12 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
     const auto report = genshin.capabilities(install, profile);
     if (report.status_of(Capability::MobileUi) == CapabilityStatus::Supported) {
         REQUIRE(plan.has_value());
-        REQUIRE(plan->operations.size() == 3);
-        CHECK(plan->operations[1].kind == PatchOperationKind::InstallCodeStub);
-        CHECK(plan->operations[2].kind == PatchOperationKind::InvokeBootstrap);
+        REQUIRE(plan->operations.size() == 2);
+        CHECK(plan->operations[1].kind ==
+              PatchOperationKind::InstallOneShotDetour);
+        REQUIRE(plan->mobile_ui_diagnostic.has_value());
+        CHECK(plan->mobile_ui_diagnostic->grph_ui_offset == 0x2000);
+        CHECK(plan->mobile_ui_diagnostic->grph_input_offset == 0x5000);
     } else {
         REQUIRE_FALSE(plan.has_value());
         CHECK(plan.error().code == ErrorCode::NotSupported);
@@ -760,11 +763,13 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
     }
 }
 
-TEST_CASE("mobile UI builders compose bootstrap ops from resolved signatures",
+TEST_CASE("genshin mobile UI builder composes a lifecycle one-shot detour",
           "[game][mobileui]") {
     std::vector<ResolvedSignature> signatures;
     signatures.push_back(resolved("genshin.mobileui.v1",
                                   {0x1000, 0x2000, 0x3000, 0x4000}));
+    signatures.push_back(resolved("genshin.mobileui.input", {0x5000}));
+    signatures.push_back(resolved("genshin.unhooktime", {0x6000, 0x7000}));
 
     Profile profile;
     game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
@@ -773,11 +778,29 @@ TEST_CASE("mobile UI builders compose bootstrap ops from resolved signatures",
         hoyoflux::game::genshin::GenshinMobileUiPatchBuilder::add_operations(
             plan, ctx)
             .has_value());
-    REQUIRE(plan.operations.size() == 2);
-    CHECK(plan.operations[0].kind == PatchOperationKind::InstallCodeStub);
-    CHECK(plan.operations[0].data.size() > 16);
-    CHECK(plan.operations[1].kind == PatchOperationKind::InvokeBootstrap);
-    CHECK(plan.operations[1].stub_index == 0);
+    REQUIRE(plan.operations.size() == 1);
+    CHECK(plan.operations[0].kind ==
+          PatchOperationKind::InstallOneShotDetour);
+    CHECK(plan.operations[0].address == 0x6000);
+    CHECK(plan.operations[0].target_address == 0x7000);
+    CHECK(plan.operations[0].data.size() > 64);
+    CHECK(std::find(plan.operations[0].data.begin(),
+                    plan.operations[0].data.end(), std::byte{0xC3}) !=
+          plan.operations[0].data.end());
+    const auto& stub = plan.operations[0].data;
+    const auto contains = [&](std::initializer_list<std::byte> instruction) {
+        return std::search(stub.begin(), stub.end(), instruction.begin(),
+                           instruction.end()) != stub.end();
+    };
+    CHECK(contains({std::byte{0xBA}, std::byte{0x02}, std::byte{0x00},
+                    std::byte{0x00}, std::byte{0x00}}));  // edx = 2
+    CHECK(contains({std::byte{0x41}, std::byte{0xB8}, std::byte{0x01},
+                    std::byte{0x00}, std::byte{0x00},
+                    std::byte{0x00}}));  // r8d = true
+    CHECK(contains({std::byte{0xBA}, std::byte{0x03}, std::byte{0x00},
+                    std::byte{0x00}, std::byte{0x00}}));  // edx = 3
+    CHECK(contains({std::byte{0x45}, std::byte{0x31},
+                    std::byte{0xC0}}));  // r8d = false
 
     // Missing signatures are an explicit error, never a silent skip.
     PatchPlan empty_plan;

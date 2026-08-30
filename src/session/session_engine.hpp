@@ -43,6 +43,7 @@ struct SessionConfig {
     // GameAssembly.dll) to be loaded by the game after it starts running.
     uint32_t module_wait_timeout_ms{60000};
     uint32_t module_poll_interval_ms{100};
+    bool verbose{false};
 };
 
 class SessionEngine {

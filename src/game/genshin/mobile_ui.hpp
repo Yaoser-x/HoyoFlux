@@ -4,10 +4,10 @@
 // Mobile UI bootstrap from the resolved mobile-UI signatures. Per-game by
 // design - no cross-game branching.
 //
-// The generated stub runs inside the suspended game (InvokeBootstrap) after
-// the engine modules exist: it calls the game's gui_set / input_set functions
-// with the resolved object + class pointers, which switches the runtime UI
-// mode to mobile.
+// The generated stub is reached from the game's own UI lifecycle CALL. It
+// invokes the original callee, resolves UI/input objects from the graph-class
+// global and typed field offsets, then calls both setters once on that game
+// thread. Genshin never uses InvokeBootstrap/CreateRemoteThread for Mobile UI.
 //
 // REAL-GAME GATE: kPayloadValidated stays false until the call sequence has
 // been proven against the live game (plan B1). While false, build_patch_plan
@@ -25,9 +25,8 @@ public:
     // True once the stub payload has been validated on a real game.
     static constexpr bool kPayloadValidated = false;
 
-    // Appends InstallCodeStub + InvokeBootstrap to `plan`. Every required
-    // signature must be resolved; a missing one is an error, never a silent
-    // skip.
+    // Appends one InstallOneShotDetour. mobileui.v1/v2, mobileui.input and
+    // unhooktime must all resolve; a missing field is an explicit error.
     [[nodiscard]] static Result<void> add_operations(PatchPlan& plan,
                                                      const PatchContext& context);
 

@@ -43,8 +43,8 @@ struct AppliedPatch {
 // into the returned AppliedPatch::runtime. On failure the already-applied
 // operations are rolled back before the error is returned.
 //
-// Requires the plan's anchor (runtime.near_address) to be set when the plan
-// contains InstallCodeStub operations.
+// Requires the plan's anchor (runtime.near_address) when the plan contains
+// InstallCodeStub or InstallOneShotDetour operations.
 Result<AppliedPatch> apply_patch_plan(const win32::UniqueHandle& process,
                                       const PatchPlan& plan);
 

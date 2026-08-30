@@ -13,7 +13,11 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -56,6 +60,24 @@ Result<std::vector<uintptr_t>> locate_modules(
         bases.push_back(*base);
     }
     return bases;
+}
+
+std::string hex_address(uintptr_t value) {
+    std::ostringstream out;
+    out << "0x" << std::hex << std::uppercase << value;
+    return out.str();
+}
+
+std::string hex_bytes(const std::vector<std::byte>& bytes) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (i != 0) {
+            out << ' ';
+        }
+        out << std::setw(2) << std::to_integer<unsigned>(bytes[i]);
+    }
+    return out.str();
 }
 
 }  // namespace
@@ -350,12 +372,44 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     if (!plan) {
         return finish_failed({&*launched, nullptr, game_has_run, plan.error()});
     }
+    if (config_.verbose && plan->mobile_ui_diagnostic.has_value()) {
+        const auto& d = *plan->mobile_ui_diagnostic;
+        std::cout << "mobile-ui:\n"
+                  << "  variant              " << d.variant << "\n"
+                  << "  grph-class-global    "
+                  << hex_address(d.grph_class_global) << "\n"
+                  << "  grph-ui-offset       "
+                  << hex_address(static_cast<uint32_t>(d.grph_ui_offset)) << "\n"
+                  << "  grph-input-offset    "
+                  << hex_address(static_cast<uint32_t>(d.grph_input_offset)) << "\n"
+                  << "  gui-set              " << hex_address(d.func_gui_set)
+                  << "\n"
+                  << "  input-set            " << hex_address(d.func_input_set)
+                  << "\n"
+                  << "  lifecycle-hook       "
+                  << hex_address(d.lifecycle_call_disp) << "\n"
+                  << "  lifecycle-callee     "
+                  << hex_address(d.lifecycle_original_callee) << "\n"
+                  << "  mode                 experimental-one-shot\n";
+    }
     patch::AppliedPatch applied;
     auto apply_result = patch::apply_patch_plan(launched->process, *plan);
     if (!apply_result) {
         return finish_failed({&*launched, nullptr, game_has_run, apply_result.error()});
     }
     applied = std::move(*apply_result);
+    if (config_.verbose && plan->mobile_ui_diagnostic.has_value()) {
+        const auto detour = std::find_if(
+            applied.operations.begin(), applied.operations.end(),
+            [](const auto& operation) {
+                return operation.op.kind ==
+                       PatchOperationKind::InstallOneShotDetour;
+            });
+        if (detour != applied.operations.end()) {
+            std::cout << "  hook-original        "
+                      << hex_bytes(detour->original) << "\n";
+        }
+    }
 
     // ---- Running ----------------------------------------------------------
     // Past this point patched pages may execute: external rollback is no
@@ -367,6 +421,7 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     journal.stage = SessionStage::Running;
     save_journal(journal);
 
+    const auto game_started = std::chrono::steady_clock::now();
     if (game_has_run) {
         if (auto resumed = win32::resume_process_threads(launched->pid); !resumed) {
             return finish_failed({&*launched, &applied, false, resumed.error()});
@@ -424,6 +479,18 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     }
 
     WaitForSingleObject(launched->process.get(), INFINITE);
+    context.game_runtime_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - game_started)
+            .count());
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(launched->process.get(), &exit_code)) {
+        return finish_failed({&*launched, &applied, true,
+                              Error::make(ErrorCode::OsError,
+                                          "GetExitCodeProcess failed",
+                                          GetLastError())});
+    }
+    context.process_exit_code = exit_code;
 
     // ---- Restoring / Completed -------------------------------------------
     context.stage = SessionStage::Restoring;
@@ -440,6 +507,21 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     if (auto cleared = clear_journal(); !cleared) {
         context.stage = SessionStage::Failed;
         return std::unexpected(cleared.error());
+    }
+    if (context.process_exit_code != 0) {
+        context.stage = SessionStage::Failed;
+        return std::unexpected(Error::make(
+            ErrorCode::SessionFailed,
+            "game exited with code " +
+                std::to_string(context.process_exit_code) + " after " +
+                std::to_string(context.game_runtime_ms) + " ms"));
+    }
+    if (request.profile.ui.mobile_ui && context.game_runtime_ms < 5000) {
+        context.stage = SessionStage::Failed;
+        return std::unexpected(Error::make(
+            ErrorCode::SessionFailed,
+            "game exited during experimental Mobile UI startup after " +
+                std::to_string(context.game_runtime_ms) + " ms"));
     }
     context.stage = SessionStage::Completed;
     return context;

@@ -137,9 +137,12 @@ Result<scan::Signature> signature(SignatureId id) {
         return scan::make_signature("genshin.mobileui.input", kIl2CppSection,
                                     kMobileUiInput, {raw_i32(0x10)});
     case SignatureId::UnhookTime:
-        // legacy: rip = addr+9; rip += *(i32)(rip) + 4
+        // Lifecycle call site plus its original callee. Mobile UI redirects
+        // the call displacement to a near one-shot stub running on the game
+        // thread; the stub calls the original callee first.
         return scan::make_signature("genshin.unhooktime", kIl2CppSection,
-                                    kUnhookTime, {rip_rel(9, 4)});
+                                    kUnhookTime,
+                                    {field_disp(9), rip_rel(9, 4)});
     case SignatureId::Dpi:
         // legacy: rip = addr+4; rip += *(i32)(rip) + 4
         return scan::make_signature("genshin.dpi", kIl2CppSection, kDpi,
