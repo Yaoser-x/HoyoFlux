@@ -301,7 +301,7 @@ resolution = "1220x2712"
 persistence = "session"
 
 [profiles.xiaomi.runtime]
-fps = 60
+fps = 120
 
 [profiles.xiaomi.ui]
 mobile_ui = true

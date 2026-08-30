@@ -51,6 +51,13 @@ Result<std::vector<RegistryValue>> read_registry_values(std::wstring_view subkey
 Result<void> write_registry_values(std::wstring_view subkey,
                                    std::span<const RegistryValue> values);
 
+// Make the values whose names start with `prefix` exactly match `values`:
+// delete protected values absent from the snapshot, then replay the snapshot.
+// Values outside the prefix are never changed.
+Result<void> restore_registry_prefix_exact(
+    std::wstring_view subkey, std::wstring_view prefix,
+    std::span<const RegistryValue> values);
+
 // True when HKCU\<subkey> exists.
 Result<bool> registry_key_exists(std::wstring_view subkey);
 

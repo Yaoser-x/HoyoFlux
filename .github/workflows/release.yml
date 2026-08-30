@@ -21,11 +21,11 @@ jobs:
 
       - name: Install llvm-mingw toolchain
         run: |
-          $tag = "20250521"
-          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$tag/llvm-mingw-$tag-ucrt-windows-x86_64.zip"
+          $tag = (Get-Content .github/llvm-mingw-version.txt -Raw).Trim()
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$tag/llvm-mingw-$tag-ucrt-x86_64.zip"
           Invoke-WebRequest -Uri $url -OutFile llvm-mingw.zip
           Expand-Archive -Path llvm-mingw.zip -DestinationPath C:\tools
-          "C:\tools\llvm-mingw-$tag-ucrt-windows-x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\tools\llvm-mingw-$tag-ucrt-x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure (release)
         run: cmake --preset release

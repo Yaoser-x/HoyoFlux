@@ -14,6 +14,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -318,6 +319,15 @@ TEST_CASE("recovery restores game persistent state before clearing the journal",
     };
     REQUIRE(w32::write_registry_values(root, desktop_state).has_value());
 
+    std::vector<w32::RegistryValue> unrelated;
+    for (uint32_t i = 0; i < 20; ++i) {
+        unrelated.push_back({
+            L"UnrelatedSetting" + std::to_wstring(i), REG_DWORD,
+            std::vector<std::byte>(reinterpret_cast<const std::byte*>(&i),
+                                   reinterpret_cast<const std::byte*>(&i + 1))});
+    }
+    REQUIRE(w32::write_registry_values(root, unrelated).has_value());
+
     // Journal records the desktop snapshot; then the "game" rewrites it.
     const std::array<uint32_t, 1> ipad{1920};
     const w32::RegistryValue game_wrote[] = {
@@ -411,6 +421,15 @@ TEST_CASE("persistent state guard snaps changed values back event-driven",
     };
     REQUIRE(w32::write_registry_values(root, desktop_state).has_value());
 
+    std::vector<w32::RegistryValue> guard_unrelated;
+    for (uint32_t i = 0; i < 20; ++i) {
+        guard_unrelated.push_back({
+            L"UnrelatedSetting" + std::to_wstring(i), REG_DWORD,
+            std::vector<std::byte>(reinterpret_cast<const std::byte*>(&i),
+                                   reinterpret_cast<const std::byte*>(&i + 1))});
+    }
+    REQUIRE(w32::write_registry_values(root, guard_unrelated).has_value());
+
     hoyoflux::PersistentDisplayState snapshot;
     hoyoflux::PersistentSettingSet set;
     set.root = root;
@@ -423,6 +442,19 @@ TEST_CASE("persistent state guard snaps changed values back event-driven",
 
     session::PersistentStateGuard guard;
     REQUIRE(guard.start(snapshot).has_value());
+
+    // An unrelated write wakes the registry notification but must not be
+    // mistaken for protected-state drift or cause a restore loop.
+    const std::array<uint32_t, 1> unrelated_update{99};
+    const w32::RegistryValue unrelated_wrote[] = {
+        {L"UnrelatedSetting0", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(unrelated_update.data()),
+             reinterpret_cast<const std::byte*>(unrelated_update.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, unrelated_wrote).has_value());
+    Sleep(100);
+    CHECK(guard.restore_count() == 0);
 
     // Simulate the game rewriting its persistent value.
     const std::array<uint32_t, 1> ipad{1920};
@@ -448,6 +480,25 @@ TEST_CASE("persistent state guard snaps changed values back event-driven",
     }
     CHECK(restored);
     CHECK(guard.restore_count() >= 1);
+
+    // A protected value created during the session is removed exactly.
+    const w32::RegistryValue created[] = {
+        {L"Screenmanager SessionOnly H456", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(ipad.data()),
+             reinterpret_cast<const std::byte*>(ipad.data() + 1))},
+    };
+    REQUIRE(w32::write_registry_values(root, created).has_value());
+    bool removed = false;
+    for (int i = 0; i < 100 && !removed; ++i) {
+        Sleep(20);
+        auto values = w32::read_registry_values(root);
+        REQUIRE(values.has_value());
+        removed = std::none_of(values->begin(), values->end(), [](const auto& value) {
+            return value.name == L"Screenmanager SessionOnly H456";
+        });
+    }
+    CHECK(removed);
 
     guard.stop();
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());

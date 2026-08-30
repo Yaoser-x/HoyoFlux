@@ -64,3 +64,19 @@ TEST_CASE("a controller with everything disabled starts no services",
     CHECK_FALSE(controller.hotkeys_active());
     controller.stop();
 }
+
+TEST_CASE("hotkey registration failure is reported by start",
+          "[runtime][hotkeys]") {
+    REQUIRE(RegisterHotKey(nullptr, 91, MOD_NOREPEAT, VK_END));
+
+    RuntimeController controller;
+    RuntimeController::Config config;
+    config.hotkeys_enabled = true;
+    auto started = controller.start(config, [](uint32_t) {
+        return Result<void>{};
+    });
+    CHECK_FALSE(started.has_value());
+    CHECK_FALSE(controller.hotkeys_active());
+
+    UnregisterHotKey(nullptr, 91);
+}

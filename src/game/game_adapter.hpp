@@ -128,7 +128,8 @@ std::unique_ptr<GameAdapter> make_adapter(GameId game);
 
 // Shared F2 implementation used by the adapters: capture every
 // "Screenmanager*" value stored under each existing root (Unity's standard
-// persistent display settings); restore replays them verbatim. The watched
+// persistent display settings); restore makes that protected subset exactly
+// match the snapshot while leaving every unrelated value untouched. The watched
 // roots come from the adapter, never a hardcoded value list - the
 // real-machine A/B experiment (docs/persistent-state-experiment.md)
 // validates coverage.

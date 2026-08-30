@@ -28,12 +28,33 @@ Result<void> RuntimeController::start(const Config& config, FpsWriter writer) {
 
     // F6: a disabled power save must not even create the listener.
     if (config_.power_save_enabled) {
+        std::promise<Result<void>> initialized;
+        auto ready = initialized.get_future();
+        foreground_worker_ = std::thread(
+            [this, init = std::move(initialized)]() mutable {
+                foreground_thread(std::move(init));
+            });
+        auto result = ready.get();
+        if (!result) {
+            foreground_worker_.join();
+            return std::unexpected(result.error());
+        }
         foreground_active_ = true;
-        foreground_worker_ = std::thread([this] { foreground_thread(); });
     }
     if (config_.hotkeys_enabled) {
+        std::promise<Result<void>> initialized;
+        auto ready = initialized.get_future();
+        hotkey_worker_ = std::thread(
+            [this, init = std::move(initialized)]() mutable {
+                hotkey_thread(std::move(init));
+            });
+        auto result = ready.get();
+        if (!result) {
+            hotkey_worker_.join();
+            stop();
+            return std::unexpected(result.error());
+        }
         hotkeys_active_ = true;
-        hotkey_worker_ = std::thread([this] { hotkey_thread(); });
     }
     return {};
 }
@@ -68,7 +89,8 @@ void RuntimeController::on_foreground_changed(uint32_t foreground_pid) {
     (void)writer_(target);
 }
 
-void RuntimeController::foreground_thread() {
+void RuntimeController::foreground_thread(
+    std::promise<Result<void>> initialized) {
     foreground_thread_id_ = GetCurrentThreadId();
     t_hook_controller = this;
 
@@ -88,12 +110,15 @@ void RuntimeController::foreground_thread() {
             GetWindowThreadProcessId(hwnd, &pid);
             t_hook_controller->on_foreground_changed(pid);
         },
-        GetCurrentProcessId(), GetCurrentThreadId(), WINEVENT_OUTOFCONTEXT);
+        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     if (foreground_hook_ == nullptr) {
-        foreground_active_ = false;
+        const DWORD error = GetLastError();
         t_hook_controller = nullptr;
+        initialized.set_value(std::unexpected(Error::make(
+            ErrorCode::OsError, "SetWinEventHook failed", error)));
         return;
     }
+    initialized.set_value(Result<void>{});
 
     // The pump that delivers the hook callbacks; WM_QUIT ends it.
     MSG message;
@@ -104,17 +129,33 @@ void RuntimeController::foreground_thread() {
     t_hook_controller = nullptr;
 }
 
-void RuntimeController::hotkey_thread() {
+void RuntimeController::hotkey_thread(std::promise<Result<void>> initialized) {
     hotkey_thread_id_ = GetCurrentThreadId();
 
     // RegisterHotKey (plan section 15) - no GetAsyncKeyState polling.
     // END: toggle fps control. Ctrl+Up / Ctrl+Down: step the fps.
-    if (!RegisterHotKey(nullptr, 1, MOD_NOREPEAT, VK_END) ||
-        !RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_NOREPEAT, VK_UP) ||
-        !RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_NOREPEAT, VK_DOWN)) {
-        hotkeys_active_ = false;
+    unsigned registered = 0;
+    if (RegisterHotKey(nullptr, 1, MOD_NOREPEAT, VK_END)) {
+        ++registered;
+    }
+    if (registered == 1 &&
+        RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_NOREPEAT, VK_UP)) {
+        ++registered;
+    }
+    if (registered == 2 &&
+        RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_NOREPEAT, VK_DOWN)) {
+        ++registered;
+    }
+    if (registered != 3) {
+        const DWORD error = GetLastError();
+        for (unsigned id = 1; id <= registered; ++id) {
+            UnregisterHotKey(nullptr, static_cast<int>(id));
+        }
+        initialized.set_value(std::unexpected(
+            Error::make(ErrorCode::OsError, "RegisterHotKey failed", error)));
         return;
     }
+    initialized.set_value(Result<void>{});
 
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {

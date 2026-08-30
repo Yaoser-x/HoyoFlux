@@ -16,7 +16,11 @@ using hoyoflux::PersistentSettingSet;
 // against the snapshot. Absent-from-current names also count as changes.
 bool root_matches_snapshot(const std::vector<PersistentSetting>& snapshot,
                            const std::vector<hoyoflux::win32::RegistryValue>& current) {
-    if (snapshot.size() != current.size()) {
+    const auto protected_count = static_cast<size_t>(std::count_if(
+        current.begin(), current.end(), [](const auto& value) {
+            return value.name.rfind(game::kUnityScreenmanagerPrefix, 0) == 0;
+        }));
+    if (snapshot.size() != protected_count) {
         return false;
     }
     for (const auto& setting : snapshot) {
@@ -159,7 +163,9 @@ void PersistentStateGuard::watch_loop() {
             values.push_back(win32::RegistryValue{setting.name, setting.type,
                                                   setting.data});
         }
-        if (win32::write_registry_values(watch.root, values).has_value()) {
+        if (win32::restore_registry_prefix_exact(
+                watch.root, game::kUnityScreenmanagerPrefix, values)
+                .has_value()) {
             ++restore_count_;
         }
     }

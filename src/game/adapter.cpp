@@ -115,7 +115,8 @@ Result<void> restore_persistent_roots(const PersistentDisplayState& state) {
             values.push_back(win32::RegistryValue{setting.name, setting.type,
                                                   setting.data});
         }
-        if (auto written = win32::write_registry_values(set.root, values);
+        if (auto written = win32::restore_registry_prefix_exact(
+                set.root, kUnityScreenmanagerPrefix, values);
             !written) {
             return std::unexpected(written.error());
         }

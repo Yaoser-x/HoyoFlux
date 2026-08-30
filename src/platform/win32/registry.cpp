@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -254,6 +255,46 @@ Result<void> write_registry_values(std::wstring_view subkey,
         }
     }
     return {};
+}
+
+Result<void> restore_registry_prefix_exact(
+    std::wstring_view subkey, std::wstring_view prefix,
+    std::span<const RegistryValue> values) {
+    auto current = read_registry_values(subkey);
+    if (!current) {
+        return std::unexpected(current.error());
+    }
+
+    HKEY raw = nullptr;
+    const LSTATUS opened = RegCreateKeyExW(
+        HKEY_CURRENT_USER, std::wstring(subkey).c_str(), 0, nullptr,
+        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &raw, nullptr);
+    if (opened != ERROR_SUCCESS) {
+        return std::unexpected(Error::make(
+            ErrorCode::RegistryReadFailed,
+            "RegCreateKeyExW(KEY_SET_VALUE) failed for " + utf8(subkey), opened));
+    }
+    RegKey key(raw);
+    for (const auto& existing : *current) {
+        if (existing.name.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const bool retained = std::any_of(
+            values.begin(), values.end(), [&](const RegistryValue& expected) {
+                return expected.name == existing.name;
+            });
+        if (!retained) {
+            const LSTATUS deleted =
+                RegDeleteValueW(key.get(), existing.name.c_str());
+            if (deleted != ERROR_SUCCESS && deleted != ERROR_FILE_NOT_FOUND) {
+                return std::unexpected(Error::make(
+                    ErrorCode::RegistryReadFailed,
+                    "RegDeleteValueW failed for '" + utf8(existing.name) + "'",
+                    deleted));
+            }
+        }
+    }
+    return write_registry_values(subkey, values);
 }
 
 }  // namespace hoyoflux::win32

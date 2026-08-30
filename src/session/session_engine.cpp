@@ -192,10 +192,38 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         return std::unexpected(saved.error());
     }
 
+    auto restore_session_state = [&]() -> Result<void> {
+        if (persistent_snapshot.has_value()) {
+            if (auto restored = adapter_.restore_persistent_display_state(
+                    *persistent_snapshot);
+                !restored) {
+                return std::unexpected(restored.error());
+            }
+            std::vector<std::wstring> roots;
+            roots.reserve(persistent_snapshot->sets.size());
+            for (const auto& set : persistent_snapshot->sets) {
+                roots.push_back(set.root);
+            }
+            auto verify = game::snapshot_persistent_roots(roots);
+            if (!verify || !game::persistent_state_equals(*persistent_snapshot,
+                                                           *verify)) {
+                return std::unexpected(Error::make(
+                    ErrorCode::SessionFailed,
+                    "persistent-state restore verification failed; recovery "
+                    "journal retained"));
+            }
+        }
+        if (auto restored = restore_display_snapshot(journal.rollback.displays);
+            !restored) {
+            return std::unexpected(restored.error());
+        }
+        return {};
+    };
+
     // Everything from here on shares the same failure handling: stop the
-    // still-suspended game we own, undo uncommitted patches, journal ->
-    // Failed -> cleared. Safe because none of this runs after the game has
-    // executed patched code (patches die with the process anyway).
+    // game we own, undo uncommitted patches, and restore session state when
+    // the game has executed at all. A failed restore retains the journal.
+    bool game_has_run = false;
     struct SessionFailure {
         const win32::LaunchedProcess* launched{nullptr};
         patch::AppliedPatch* applied{nullptr};
@@ -214,7 +242,20 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         }
         journal.stage = SessionStage::Failed;
         save_journal(journal);
-        clear_journal();
+        if (game_has_run) {
+            if (auto restored = restore_session_state(); !restored) {
+                context.stage = SessionStage::Failed;
+                return std::unexpected(Error::make(
+                    ErrorCode::SessionFailed,
+                    failure.error.message + "; rollback failed: " +
+                        restored.error().message + "; recovery journal retained",
+                    restored.error().os_code));
+            }
+        }
+        if (auto cleared = clear_journal(); !cleared) {
+            context.stage = SessionStage::Failed;
+            return std::unexpected(cleared.error());
+        }
         context.stage = SessionStage::Failed;
         return std::unexpected(std::move(failure.error));
     };
@@ -251,7 +292,6 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     // others resume, wait for the modules to appear, then re-suspend for
     // patching - external only, no remote thread, no injection.
     context.stage = SessionStage::Resolving;
-    bool game_has_run = false;
     std::vector<scan::ModuleSnapshot> snapshots;
     std::vector<uintptr_t> bases;
     auto located = locate_modules(launched->process, *requirements);
@@ -391,21 +431,10 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     guard.stop();
     // F2 primary restore: whatever the game persisted for its next launch
     // goes back to the pre-launch snapshot (Test C of the release gate).
-    if (persistent_snapshot.has_value()) {
-        if (auto restored =
-                adapter_.restore_persistent_display_state(*persistent_snapshot);
-            !restored) {
-            context.stage = SessionStage::Failed;
-            clear_journal();
-            return std::unexpected(restored.error());
-        }
-    }
-    // Plan-risk-3 fallback (auxiliary per plan §8): restore the physical
-    // display modes captured at launch. Harmless when nothing changed them.
-    if (auto restored = restore_display_snapshot(journal.rollback.displays);
-        !restored) {
+    // Persistent-state exact restore + verification, then the physical-mode
+    // fallback. Failure deliberately leaves the recovery journal intact.
+    if (auto restored = restore_session_state(); !restored) {
         context.stage = SessionStage::Failed;
-        clear_journal();
         return std::unexpected(restored.error());
     }
     if (auto cleared = clear_journal(); !cleared) {

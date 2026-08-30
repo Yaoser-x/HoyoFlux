@@ -663,6 +663,7 @@ TEST_CASE("persistent roots snapshot/restore protects Screenmanager values",
     // Simulate the game rewriting its persistent settings.
     const std::array<uint32_t, 1> new_width{1080};
     const std::array<uint32_t, 1> new_height{1920};
+    const std::array<uint32_t, 1> new_protected{7};
     const w32::RegistryValue game_wrote[] = {
         {L"Screenmanager Resolution Width H907608738", REG_DWORD,
          std::vector<std::byte>(
@@ -672,13 +673,20 @@ TEST_CASE("persistent roots snapshot/restore protects Screenmanager values",
          std::vector<std::byte>(
              reinterpret_cast<const std::byte*>(new_height.data()),
              reinterpret_cast<const std::byte*>(new_height.data() + 1))},
+        {L"Screenmanager Newly Created H123", REG_DWORD,
+         std::vector<std::byte>(
+             reinterpret_cast<const std::byte*>(new_protected.data()),
+             reinterpret_cast<const std::byte*>(new_protected.data() + 1))},
     };
     REQUIRE(w32::write_registry_values(root, game_wrote).has_value());
 
-    // Restore replays the snapshot verbatim.
+    // Restore makes the protected subset exact: session-created protected
+    // values disappear, while unrelated game settings remain untouched.
     REQUIRE(game::restore_persistent_roots(*snapshot).has_value());
     auto read_back = w32::read_registry_values(root);
     REQUIRE(read_back.has_value());
+    bool unrelated_survived = false;
+    bool session_value_survived = false;
     for (const auto& value : *read_back) {
         if (value.name == L"Screenmanager Resolution Width H907608738") {
             CHECK(*reinterpret_cast<const uint32_t*>(value.data.data()) == 2266);
@@ -686,7 +694,12 @@ TEST_CASE("persistent roots snapshot/restore protects Screenmanager values",
         if (value.name == L"Screenmanager Resolution Height H907608738") {
             CHECK(*reinterpret_cast<const uint32_t*>(value.data.data()) == 1488);
         }
+        unrelated_survived |= value.name == L"UnrelatedSetting";
+        session_value_survived |=
+            value.name == L"Screenmanager Newly Created H123";
     }
+    CHECK(unrelated_survived);
+    CHECK_FALSE(session_value_survived);
 
     RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
 }

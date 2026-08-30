@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <thread>
 
 namespace hoyoflux::runtime {
@@ -68,8 +69,8 @@ public:
     }
 
 private:
-    void foreground_thread();
-    void hotkey_thread();
+    void foreground_thread(std::promise<Result<void>> initialized);
+    void hotkey_thread(std::promise<Result<void>> initialized);
 
     Config config_;
     FpsWriter writer_;

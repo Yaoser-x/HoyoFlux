@@ -104,6 +104,9 @@ Result<AppliedOperation> apply_one(const win32::UniqueHandle& process,
             !wrote) {
             return std::unexpected(wrote.error());
         }
+        FlushInstructionCache(process.get(),
+                              reinterpret_cast<LPCVOID>(window_base),
+                              kRedirectWindow);
         break;
     }
 
@@ -174,7 +177,16 @@ Result<void> undo_one(const win32::UniqueHandle& process,
     if (record.op.kind == PatchOperationKind::RedirectRelative) {
         address &= ~uintptr_t{7};  // window base
     }
-    return write_protected(process, address, record.original);
+    auto restored = write_protected(process, address, record.original);
+    if (!restored) {
+        return std::unexpected(restored.error());
+    }
+    if (record.op.kind == PatchOperationKind::WriteBytes ||
+        record.op.kind == PatchOperationKind::RedirectRelative) {
+        FlushInstructionCache(process.get(), reinterpret_cast<LPCVOID>(address),
+                              record.original.size());
+    }
+    return {};
 }
 
 }  // namespace
