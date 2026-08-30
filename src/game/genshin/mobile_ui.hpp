@@ -9,10 +9,8 @@
 // UI/input objects and calls both setters on that game thread. Genshin never
 // uses InvokeBootstrap/CreateRemoteThread for Mobile UI.
 //
-// REAL-GAME GATE: kPayloadValidated stays false until the call sequence has
-// been proven against the live game (plan B1). While false, build_patch_plan
-// refuses to install the stub - the capability contract reports MobileUi as
-// Unsupported instead of shipping an unverified patch.
+// B1 live validation passed for both normal sessions and crash recovery. The
+// validated function-entry implementation remains intentionally frozen.
 
 #include "game/game_adapter.hpp"
 
@@ -22,8 +20,8 @@ namespace hoyoflux::game::genshin {
 
 class GenshinMobileUiPatchBuilder {
 public:
-    // True once the stub payload has been validated on a real game.
-    static constexpr bool kPayloadValidated = false;
+    // True after B1 live validation against the real game.
+    static constexpr bool kPayloadValidated = true;
 
     // Appends one InstallFunctionEntryDetour. mobileui.v1/v2, mobileui.input and
     // unhooktime must all resolve; a missing field is an explicit error.

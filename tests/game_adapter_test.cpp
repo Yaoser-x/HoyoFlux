@@ -330,8 +330,8 @@ TEST_CASE("genshin plan redirects fps at RemoteState and honors dpi",
     Profile profile;
     profile.runtime.fps = 165;
     profile.runtime.power_save = PowerSavePolicy::Enabled;
-    // mobile_ui stays off here: since F5 the mobile-UI gate refuses
-    // unvalidated payloads, and that path has its own test below.
+    // mobile_ui stays off because this test isolates FPS and power-save;
+    // the production Mobile UI path has its own test below.
 
     game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
     auto plan = adapter.build_patch_plan(ctx);
@@ -345,7 +345,7 @@ TEST_CASE("genshin plan redirects fps at RemoteState and honors dpi",
 
     CHECK(plan->runtime.near_address == 0x7FF600000000);
     CHECK(plan->runtime.initial_fps == 165);
-    // mobile_ui is off (F5 gate) - only the power-save flag is requested.
+    // mobile_ui is off here - only the power-save flag is requested.
     CHECK(plan->runtime.initial_flags == kFlagPowerSave);
 }
 
@@ -526,26 +526,27 @@ TEST_CASE("unsupported features stop validation with a reason",
     const GameInstall genshin_install{GameId::Genshin, true, "YuanShen.exe"};
     hoyoflux::game::GenshinAdapter adapter;
 
-    SECTION("mobile_ui follows the build's validation gate") {
+    SECTION("validated Genshin mobile_ui is supported in production") {
         Profile profile;
         profile.ui.mobile_ui = true;
         const auto report = adapter.capabilities(genshin_install, profile);
-        auto valid = game::validate_profile(
-            profile, report);
-        if (report.status_of(Capability::MobileUi) ==
-            CapabilityStatus::Supported) {
-            REQUIRE(valid.has_value());
-            const auto* entry = report.find(Capability::MobileUi);
-            REQUIRE(entry != nullptr);
-            CHECK(entry->reason.find("EXPERIMENTAL B1 validation build") !=
-                  std::string::npos);
-        } else {
-            REQUIRE_FALSE(valid.has_value());
-            CHECK(valid.error().code == ErrorCode::NotSupported);
-            CHECK(valid.error().message.find(
-                      "Mobile UI is not implemented for Genshin") !=
-                  std::string::npos);
-        }
+        CHECK(report.status_of(Capability::MobileUi) ==
+              CapabilityStatus::Supported);
+        REQUIRE(game::validate_profile(profile, report).has_value());
+        const auto* entry = report.find(Capability::MobileUi);
+        REQUIRE(entry != nullptr);
+        CHECK(entry->reason.find("B1 live-validated") != std::string::npos);
+    }
+
+    SECTION("built-in iPad feature set validates without experimental flags") {
+        Profile ipad;
+        ipad.render.resolution = Resolution{2266, 1488};
+        ipad.runtime.fps = 60;
+        ipad.ui.mobile_ui = true;
+        ipad.ui.dpi_scale = 2.0f;
+        REQUIRE(game::validate_profile(
+                    ipad, adapter.capabilities(genshin_install, ipad))
+                    .has_value());
     }
 
     SECTION("monitor selection has no verified mechanism") {
@@ -734,7 +735,8 @@ TEST_CASE("genshin persistent state snapshot reports absence honestly",
 // F1 render launch pipeline
 // ---------------------------------------------------------------------------
 
-TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
+TEST_CASE("production Genshin mobile UI builds the validated patch plan",
+          "[game][mobileui]") {
     hoyoflux::game::GenshinAdapter genshin;
     std::vector<ResolvedSignature> signatures;
     signatures.push_back(
@@ -750,23 +752,24 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
     auto plan = genshin.build_patch_plan(ctx);
     const GameInstall install{GameId::Genshin, true, "YuanShen.exe"};
     const auto report = genshin.capabilities(install, profile);
-    if (report.status_of(Capability::MobileUi) == CapabilityStatus::Supported) {
-        REQUIRE(plan.has_value());
-        REQUIRE(plan->operations.size() == 2);
-        CHECK(plan->operations[1].kind ==
-              PatchOperationKind::InstallFunctionEntryDetour);
-        REQUIRE(plan->mobile_ui_diagnostic.has_value());
-        CHECK(plan->mobile_ui_diagnostic->grph_ui_offset == 0x2000);
-        CHECK(plan->mobile_ui_diagnostic->grph_input_offset == 0x5000);
-        CHECK(plan->mobile_ui_diagnostic->telemetry_offset > 0);
-        CHECK(plan->operations.back().data.size() >=
-              plan->mobile_ui_diagnostic->telemetry_offset +
-                  sizeof(MobileUiTelemetry));
-    } else {
-        REQUIRE_FALSE(plan.has_value());
-        CHECK(plan.error().code == ErrorCode::NotSupported);
-        CHECK(plan.error().message.find("not been validated") != std::string::npos);
-    }
+    CHECK(report.status_of(Capability::MobileUi) == CapabilityStatus::Supported);
+    REQUIRE(plan.has_value());
+    REQUIRE(plan->operations.size() == 2);
+    CHECK(plan->operations[1].kind ==
+          PatchOperationKind::InstallFunctionEntryDetour);
+    REQUIRE(plan->mobile_ui_diagnostic.has_value());
+    CHECK(plan->mobile_ui_diagnostic->grph_ui_offset == 0x2000);
+    CHECK(plan->mobile_ui_diagnostic->grph_input_offset == 0x5000);
+    CHECK(plan->mobile_ui_diagnostic->telemetry_offset > 0);
+    CHECK(plan->operations.back().data.size() >=
+          plan->mobile_ui_diagnostic->telemetry_offset +
+              sizeof(MobileUiTelemetry));
+
+    signatures.erase(signatures.begin() + 2);  // missing mobileui.input
+    auto missing = genshin.build_patch_plan(
+        game::PatchContext{signatures, profile, 0x7FF600000000, false});
+    REQUIRE_FALSE(missing.has_value());
+    CHECK(missing.error().code == ErrorCode::SignatureNotFound);
 }
 
 TEST_CASE("genshin mobile UI builder composes an upstream function-entry detour",

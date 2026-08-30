@@ -19,7 +19,7 @@ option(HOYOFLUX_BUILD_TESTS "Build the unit tests" ON)
 option(HOYOFLUX_BUILD_BENCHMARKS "Build the benchmarks" OFF)
 option(
   HOYOFLUX_EXPERIMENTAL_MOBILE_UI
-  "Enable unvalidated Mobile UI bootstrap for B1 validation"
+  "Enable Genshin Mobile UI B1 telemetry instrumentation"
   OFF
 )
 

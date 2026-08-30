@@ -184,10 +184,8 @@ void check_game(GameId game) {
     for (const auto& entry : report.entries) {
         std::cout << "       " << std::left << std::setw(24) << to_string(entry.capability)
                   << to_string(entry.status);
-        const bool experimental =
-            entry.reason.starts_with("EXPERIMENTAL B1 validation build");
         if (!entry.reason.empty() &&
-            (entry.status == CapabilityStatus::Unsupported || experimental)) {
+            entry.status == CapabilityStatus::Unsupported) {
             std::cout << " - " << entry.reason;
         }
         std::cout << "\n";

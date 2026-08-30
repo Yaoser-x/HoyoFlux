@@ -21,12 +21,8 @@ constexpr uintmax_t kOldExeThresholdBytes = 0x800000;  // legacy: < 8 MB == old
 constexpr std::string_view kFpsIdsByPriority[] = {
     "genshin.fps.5.5", "genshin.fps.5.4", "genshin.fps.3.7-5.3", "genshin.fps.old"};
 
-#if defined(HOYOFLUX_EXPERIMENTAL_MOBILE_UI)
-constexpr bool kMobileUiAvailable = true;
-#else
 constexpr bool kMobileUiAvailable =
     genshin::GenshinMobileUiPatchBuilder::kPayloadValidated;
-#endif
 
 }  // namespace
 
@@ -89,17 +85,14 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
         "monitor selection has no verified mechanism for Genshin in this "
         "build; remove \"monitor\" from the profile");
 
-    // F5: self-unhooking lifecycle function-entry detour; the payload stays
-    // gated off until its game-thread UI/Input calls pass live validation.
+    // F5: B1-validated self-unhooking lifecycle function-entry detour. It
+    // resumes the original lifecycle and runs UI/Input setters on game thread.
     add(Capability::MobileUi,
         kMobileUiAvailable ? CapabilityStatus::Supported
                            : CapabilityStatus::Unsupported,
         kMobileUiAvailable
-            ? "EXPERIMENTAL B1 validation build: unvalidated Mobile UI "
-              "function-entry detour enabled"
-            : "Mobile UI is not implemented for Genshin in this build: the "
-              "function-entry mechanism exists but its payload is unvalidated "
-              "(plan B1)");
+            ? "B1 live-validated function-entry Mobile UI support"
+            : "Genshin Mobile UI validation invariant is not satisfied");
 
     add(Capability::CustomDpi,
         profile.ui.dpi_scale.has_value() ? CapabilityStatus::Supported
@@ -285,17 +278,15 @@ Result<PatchPlan> GenshinAdapter::build_patch_plan(const PatchContext& context) 
             PatchOperation::write_bytes(dpi->fields[0], prologue));
     }
 
-    // Mobile UI (F5): the function-entry detour self-unhooks, resumes the
-    // original lifecycle function, then invokes the UI/Input setters on the
-    // game thread. Genshin never uses InvokeBootstrap/CreateRemoteThread for
-    // this path. The payload remains behind the real-game B1 gate.
+    // Mobile UI (F5): B1 live validation passed. The function-entry detour
+    // self-unhooks, resumes the original lifecycle function, then invokes the
+    // UI/Input setters on the game thread. Genshin never uses
+    // InvokeBootstrap/CreateRemoteThread for this path.
     if (context.profile.ui.mobile_ui) {
         if (!kMobileUiAvailable) {
             return std::unexpected(Error::make(
                 ErrorCode::NotSupported,
-                "Mobile UI stub payload has not been validated against the "
-                "live game yet (real-game gate, plan B1); refusing to patch "
-                "blindly"));
+                "Genshin Mobile UI validation invariant is not satisfied"));
         }
         if (auto added = genshin::GenshinMobileUiPatchBuilder::add_operations(plan, context);
             !added) {

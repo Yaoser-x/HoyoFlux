@@ -1,54 +1,35 @@
-# Persistent-state experiment (plan §7.2)
+# 持久状态实验（计划 §7.2）
 
-Goal: prove **which registry values Genshin / Star Rail actually rewrite**
-when they run, so HoyoFlux protects exactly those - nothing more, nothing
-less. Do not extend the code's field list from this document; this document
-only records the *procedure* and its results. The code captures whatever
-`Screenmanager*` values exist under the watched roots and restores them
-verbatim, so the experiment's job is to validate **root coverage**, i.e.
-that the watched roots see every value the game changes.
+目标：确认原神／崩坏：星穹铁道运行时**实际改写哪些注册表值**，使 HoyoFlux 只保护必要状态，不多也不少。不要依据本文扩展代码中的字段列表；本文只记录实验步骤与结果。代码会捕获受监控根键下现有的全部 `Screenmanager*` 值并逐字节恢复，因此实验真正要验证的是**根键覆盖范围**：所有被游戏修改的值都必须出现在受监控根键中。
 
-## Status: PENDING REAL-MACHINE VERIFICATION
+## 状态：等待真机验证
 
-The 1.0.0 release gate (plan Tests A-D) requires this experiment to be run
-on a machine with the real game. Until then the session guard ships behind
-the capability report's honest status and the compatibility matrix records
-this as pending.
+1.0.0 发布门（计划 Tests A–D）要求在安装真实游戏的机器上完成此实验。在此之前，会话守护会通过能力报告如实标记状态，兼容性矩阵也会将其记为待验证。
 
-## Tool
+## 工具
 
 ```text
-hoyoflux state-dump genshin     # read-only dump of watched roots
+hoyoflux state-dump genshin     # 只读输出受监控根键
 hoyoflux state-dump starrail
 ```
 
-The dump prints, per candidate root: whether the key exists, and every
-`Screenmanager*` value with its DWORD value decoded. It writes nothing.
+输出会逐个候选根键显示：键是否存在，以及每个 `Screenmanager*` 值解码后的 DWORD 数值。该命令不会写入任何内容。
 
-## Procedure (per game, per install: CN / Global)
+## 实验步骤（每个游戏、每种安装区域：国服／国际服）
 
-1. **Dump A (desktop baseline).** Launch the game the official way
-   (HoYoPlay), set a known desktop resolution in-game, exit, then run
-   `hoyoflux state-dump <game> > dump-A.txt`.
-2. **Pollution run.** Launch through HoyoFlux with an iPad/mobile profile,
-   play or reach the main menu, exit.
-3. **Dump B.** `hoyoflux state-dump <game> > dump-B.txt`.
-4. **Diff.** `git diff --no-index dump-A.txt dump-B.txt`.
-   Every changed line is a value the game rewrote. For the F2/F3 gate,
-   every changed value must be a `Screenmanager*` value under one of the
-   dumped roots - otherwise the root list in the adapter is incomplete.
-5. **Restore check.** Run `hoyoflux recover` (or let any later session
-   finish) and re-dump: the changed values must be back to dump-A.
+1. **Dump A（桌面基线）。** 通过官方 HoYoPlay 启动游戏，在游戏内设置已知桌面分辨率，退出后执行 `hoyoflux state-dump <game> > dump-A.txt`。
+2. **污染运行。** 通过 HoyoFlux 使用 iPad／移动端配置档启动，游玩或进入主菜单后退出。
+3. **Dump B。** 执行 `hoyoflux state-dump <game> > dump-B.txt`。
+4. **比较。** 执行 `git diff --no-index dump-A.txt dump-B.txt`。每一处变化都是游戏改写的值。F2/F3 门要求所有变化都属于已输出根键下的 `Screenmanager*` 值，否则说明适配器的根键列表不完整。
+5. **恢复检查。** 执行 `hoyoflux recover`（或等待后续任一会话正常结束）后再次输出；所有变化值都必须恢复为 Dump A。
 
-## Current watched roots (candidates, to be validated by this experiment)
+## 当前受监控根键（候选，需通过本实验验证）
 
-| Game     | Region | Root (under HKCU)                  |
-| -------- | ------ | ---------------------------------- |
-| Genshin  | CN     | `Software\miHoYo\原神`             |
-| Genshin  | Global | `Software\miHoYo\Genshin Impact`   |
-| StarRail | CN     | `Software\miHoYo\崩坏：星穹铁道`   |
-| StarRail | Global | `Software\Cognosphere\Star Rail`   |
+| 游戏 | 区域 | 根键（位于 HKCU 下） |
+| --- | --- | --- |
+| 原神 | 国服 | `Software\miHoYo\原神` |
+| 原神 | 国际服 | `Software\miHoYo\Genshin Impact` |
+| 崩坏：星穹铁道 | 国服 | `Software\miHoYo\崩坏：星穹铁道` |
+| 崩坏：星穹铁道 | 国际服 | `Software\Cognosphere\Star Rail` |
 
-If a real-machine dump shows the game writing display state elsewhere
-(file-based config, another key), add that storage location to the
-adapter's `persistent_state_roots()` - and re-run this experiment.
+若真机输出表明游戏在其他位置写入显示状态（文件配置或其他注册表键），应将该存储位置加入适配器的 `persistent_state_roots()`，然后重新执行本实验。

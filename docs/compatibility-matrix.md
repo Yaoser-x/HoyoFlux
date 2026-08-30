@@ -1,39 +1,34 @@
-# Compatibility matrix: legacy tool vs HoyoFlux (plan F15)
+# 兼容性矩阵：旧工具与 HoyoFlux（计划 F15）
 
-The legacy tool remains the behavior oracle. This matrix records, per
-feature, where HoyoFlux reaches parity and where it deliberately improves on
-the legacy behavior. "Verified" requires the real-game gate (B1); the
-automated suite alone proves the mechanism, not the in-game result.
+旧工具仍是行为基准。本表逐项记录 HoyoFlux 已对齐的行为，以及有意做出的改进。“已验证”要求通过真实游戏门（B1）；自动化测试只能证明机制，不能代替游戏内结果。
 
-## Parity
+## 行为对齐
 
-| Feature                   | Upstream (legacy)        | HoyoFlux                  | Result        | Verified        |
-| ------------------------- | ------------------------ | ------------------------- | ------------- | --------------- |
-| FPS unlock (Genshin)      | sig redirect + sync thread | rip-relative redirect at RemoteState slot | parity | mechanism tested / B1 pending |
-| FPS unlock (Star Rail)    | direct variable write    | direct variable write + mov flip | parity | mechanism tested / B1 pending |
-| Custom DPI (Genshin)      | GetDPI prologue replacement | same patch, same prologue bytes | parity | mechanism tested / B1 pending |
-| Mobile UI (Genshin)       | lifecycle function-entry hook + in-process il2cpp calls | self-unhooking function-entry detour; original lifecycle resume; game-thread UI/Input setters | parity in mechanism | payload gated (B1) |
-| Mobile UI (Star Rail)     | in-process il2cpp calls  | code stub + remote invocation | parity in mechanism | payload gated (B1) |
-| Launch argument rendering | -screen-width/height     | same verified subset only | parity        | B1 pending      |
-| Install detection         | launcher registry walk   | launcher registry walk (channel subkeys opened properly) | parity + bugfix | tested (registry) |
+| 功能 | 上游旧工具 | HoyoFlux | 结果 | 验证状态 |
+| --- | --- | --- | --- | --- |
+| 原神 FPS 解锁 | 签名重定向 + 同步线程 | RIP 相对重定向到 `RemoteState` 槽位 | 对齐 | 机制已测试／B1 待完成 |
+| 星穹铁道 FPS 解锁 | 直接写变量 | 直接写变量 + mov 翻转 | 对齐 | 机制已测试／B1 待完成 |
+| 原神自定义 DPI | 替换 `GetDPI` prologue | 相同补丁与 prologue 字节 | 对齐 | 机制已测试／B1 待完成 |
+| 原神 Mobile UI | 生命周期函数入口 Hook + 进程内 IL2CPP 调用 | 自解除函数入口 detour、恢复原生命周期、游戏线程 UI/Input setter | 对齐 | B1 正常会话与崩溃恢复通过 |
+| 星穹铁道 Mobile UI | 进程内 IL2CPP 调用 | code stub + 远程调用 | 机制对齐 | payload 仍受 B1 门控 |
+| 启动参数渲染 | `-screen-width/height` | 仅使用同一组已验证参数 | 对齐 | B1 待完成 |
+| 安装检测 | 启动器注册表遍历 | 启动器注册表遍历，并正确打开渠道子键 | 对齐并修错 | 注册表测试通过 |
 
-## Intentional behavioral improvements
+## 有意的行为改进
 
-| Behavior                     | Upstream (legacy)         | HoyoFlux                            | Why |
-| ---------------------------- | ------------------------- | ----------------------------------- | --- |
-| Persistent resolution pollution | session resolution stays in the game's saved settings and leaks into official launches | snapshot → event-driven guard → verified restore; journal survives crashes | the original bug that motivated the rewrite |
-| Alt-Tab throttling           | power-save polled foreground with GetAsyncKeyState/Sleep loops; disabling still left hooks | `power_save disabled` registers nothing at all; enabled uses EVENT_SYSTEM_FOREGROUND and writes exactly 4 bytes | no silent hooks; testable regression gate |
-| Hotkeys                      | GetAsyncKeyState + Sleep(50) polling | RegisterHotKey + message pump       | no busy-wait CPU burn |
-| Unsupported features         | configured feature silently did nothing | launch stops pre-spawn with a reason (capability contract) | no silent no-ops |
-| Crash recovery               | none / journal cleared blindly | restore → verify → only then clear; failed restore keeps the journal | state survives launcher crashes |
-| Command-line quoting         | manual pre-quoting + second quoting pass | single strict CommandLineToArgvW encoder, round-trip tested | correct argv for paths with spaces/quotes/backslashes |
-| Config parsing               | exception-throwing stoi paths | from_chars + explicit range checks; schema key for future migration | malformed config reports instead of crashing |
-| Injection surface            | manual DLL loader, general shellcode | fixed-page code stubs with per-plan ownership, no DLL loading | minimal bootstrap only |
+| 行为 | 上游旧工具 | HoyoFlux | 原因 |
+| --- | --- | --- | --- |
+| 持久分辨率污染 | 会话分辨率残留在游戏设置中并影响官方启动 | 快照 → 事件驱动守护 → 验证恢复；崩溃时保留 Journal | 这是本次重写要解决的根本问题 |
+| Alt-Tab 限帧 | 通过 `GetAsyncKeyState`／`Sleep` 轮询；关闭功能仍残留 Hook | `power_save disabled` 时不注册任何内容；启用时使用 `EVENT_SYSTEM_FOREGROUND`，每次精确写入 4 字节 | 无隐式 Hook，可做回归测试 |
+| 热键 | `GetAsyncKeyState + Sleep(50)` 轮询 | `RegisterHotKey` + 消息循环 | 避免忙等 CPU 消耗 |
+| 不支持的功能 | 配置后静默无效 | 通过能力契约在创建进程前给出原因并停止 | 不允许静默跳过 |
+| 崩溃恢复 | 无恢复／直接清理 Journal | 恢复 → 验证 → 成功后清理；失败则保留 Journal | 启动器崩溃后仍可恢复状态 |
+| 命令行引用 | 手工预引用后再次引用 | 单一严格 `CommandLineToArgvW` 编码器，并验证往返一致 | 正确处理带空格、引号与反斜杠的路径 |
+| 配置解析 | `stoi` 异常路径 | `from_chars` + 显式范围检查，并提供 schema 键 | 错误配置会报告问题而非崩溃 |
+| 注入面 | 手工 DLL loader、通用 shellcode | 固定页面 code stub，由各 PatchPlan 独立持有，不加载 DLL | 只保留最小必要机制 |
 
-## Verification status
+## 验证状态
 
-- Automated: 10 test executables, all green on the debug and release presets.
-- Real-game gates (B1) pending on a machine with the games installed:
-  desktop / iPad / Xiaomi resolution profiles, mobile UI payload validation,
-  power-save Alt-Tab regression, persistent-state Tests A-D
-  (see docs/persistent-state-experiment.md for the A/B procedure).
+- 自动化：Debug 与 Release preset 下 10 个测试程序全部通过。
+- 原神 Mobile UI：B1 正常会话、功能门与崩溃恢复均通过；telemetry 偏移修复通过逐字段有效地址测试，修复后真机复测按计划跳过。
+- 其余真机门：桌面／iPad／小米分辨率配置档、星穹铁道 Mobile UI、Alt-Tab 省电回归以及持久状态 Tests A–D 仍按各自状态推进。持久状态 A/B 步骤见 [persistent-state-experiment.md](persistent-state-experiment.md)。
