@@ -44,8 +44,13 @@ Result<std::vector<DisplayInfo>> enumerate_displays();
 // Capture the current mode of `device_name`.
 Result<DisplaySettings> query_current_settings(std::wstring_view device_name);
 
-// Restore a previously captured mode (ChangeDisplaySettingsExW). Callers must
-// be sure they are restoring, not changing, the user's display.
+// Exact comparison used to avoid asking a display driver to re-apply the
+// mode it is already using (some virtual drivers reject that no-op).
+bool display_settings_equal(const DisplaySettings& lhs,
+                            const DisplaySettings& rhs);
+
+// Restore a previously captured mode for this session only. This deliberately
+// does not persist the mode to the user's Windows display configuration.
 Result<void> restore_display_settings(const DisplaySettings& settings);
 
 }  // namespace hoyoflux::win32

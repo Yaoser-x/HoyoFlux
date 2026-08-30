@@ -92,11 +92,22 @@ Result<DisplaySettings> query_current_settings(std::wstring_view device_name) {
     return settings;
 }
 
+bool display_settings_equal(const DisplaySettings& lhs,
+                            const DisplaySettings& rhs) {
+    return lhs.device_name == rhs.device_name && lhs.width == rhs.width &&
+           lhs.height == rhs.height &&
+           lhs.refresh_rate == rhs.refresh_rate &&
+           lhs.bits_per_pixel == rhs.bits_per_pixel &&
+           lhs.position_x == rhs.position_x &&
+           lhs.position_y == rhs.position_y &&
+           lhs.interlaced == rhs.interlaced;
+}
+
 Result<void> restore_display_settings(const DisplaySettings& settings) {
     DEVMODEW mode = to_devmode(settings);
     const LONG result = ChangeDisplaySettingsExW(
         settings.device_name.empty() ? nullptr : settings.device_name.c_str(),
-        &mode, nullptr, CDS_UPDATEREGISTRY | CDS_RESET, nullptr);
+        &mode, nullptr, CDS_RESET, nullptr);
     if (result != DISP_CHANGE_SUCCESSFUL) {
         return std::unexpected(Error::make(
             ErrorCode::OsError, "ChangeDisplaySettingsExW failed: " +

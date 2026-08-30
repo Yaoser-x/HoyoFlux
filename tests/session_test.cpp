@@ -4,8 +4,10 @@
 // (resume/wait/re-suspend) flow and crash recovery are all covered.
 
 #include "game/game_adapter.hpp"
+#include "platform/win32/display.hpp"
 #include "platform/win32/process.hpp"
 #include "platform/win32/registry.hpp"
+#include "session/display_guard.hpp"
 #include "session/journal.hpp"
 #include "session/persistent_state_guard.hpp"
 #include "session/session_engine.hpp"
@@ -30,6 +32,17 @@ using namespace hoyoflux;
 namespace session = hoyoflux::session;
 
 namespace {
+
+struct IsolatedStateDirectory {
+    IsolatedStateDirectory() {
+        const auto path = std::filesystem::temp_directory_path() /
+                          (L"HoyoFlux-session-test-" +
+                           std::to_wstring(GetCurrentProcessId()));
+        SetEnvironmentVariableW(L"HOYOFLUX_STATE_DIR", path.c_str());
+    }
+};
+
+const IsolatedStateDirectory kIsolatedStateDirectory;
 
 // cmd.exe: present on every Windows test host.
 std::filesystem::path cmd_path() {
@@ -249,6 +262,23 @@ TEST_CASE("recover reacts to absent, stale and live journals", "[session][recove
     REQUIRE(still_there.has_value());
     CHECK(still_there->has_value());
     REQUIRE(session::clear_journal().has_value());
+}
+
+TEST_CASE("legacy display rollback is a no-op when mode already matches",
+          "[session][recover][display]") {
+    auto displays = w32::enumerate_displays();
+    REQUIRE(displays.has_value());
+    const auto attached = std::find_if(
+        displays->begin(), displays->end(),
+        [](const auto& display) { return display.is_attached; });
+    if (attached == displays->end()) {
+        SKIP("no attached display is available");
+    }
+    auto current = w32::query_current_settings(attached->device_name);
+    REQUIRE(current.has_value());
+
+    const std::vector<session::JournalDisplay> legacy{{*current}};
+    CHECK(session::restore_display_snapshot(legacy).has_value());
 }
 
 TEST_CASE("full session lifecycle with main-module-only requirements",

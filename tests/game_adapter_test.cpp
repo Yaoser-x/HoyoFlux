@@ -756,6 +756,10 @@ TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
         REQUIRE(plan->mobile_ui_diagnostic.has_value());
         CHECK(plan->mobile_ui_diagnostic->grph_ui_offset == 0x2000);
         CHECK(plan->mobile_ui_diagnostic->grph_input_offset == 0x5000);
+        CHECK(plan->mobile_ui_diagnostic->telemetry_offset > 0);
+        CHECK(plan->operations.back().data.size() >=
+              plan->mobile_ui_diagnostic->telemetry_offset +
+                  sizeof(MobileUiTelemetry));
     } else {
         REQUIRE_FALSE(plan.has_value());
         CHECK(plan.error().code == ErrorCode::NotSupported);

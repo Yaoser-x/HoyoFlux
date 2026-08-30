@@ -1,7 +1,6 @@
 #include "session/session_engine.hpp"
 
 #include "patch/patch_engine.hpp"
-#include "platform/win32/display.hpp"
 #include "platform/win32/process.hpp"
 #include "scan/module_snapshot.hpp"
 #include "session/display_guard.hpp"
@@ -198,18 +197,9 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     if (persistent_snapshot.has_value()) {
         journal.rollback.persistent_state = persistent_snapshot;
     }
-    if (auto displays = win32::enumerate_displays(); displays) {
-        for (const auto& display : *displays) {
-            if (!display.is_attached) {
-                continue;
-            }
-            if (auto settings =
-                    win32::query_current_settings(display.device_name);
-                settings) {
-                journal.rollback.displays.push_back(JournalDisplay{*settings});
-            }
-        }
-    }
+    // v1 never changes the Windows physical display mode. Rollback records
+    // only state HoyoFlux actually modified, so this remains empty until a
+    // future ApplyDisplayMode path records its own successful changes.
     if (auto saved = save_journal(journal); !saved) {
         return std::unexpected(saved.error());
     }
@@ -478,7 +468,68 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         }
     }
 
-    WaitForSingleObject(launched->process.get(), INFINITE);
+    if (plan->mobile_ui_diagnostic.has_value()) {
+        const DWORD startup_wait =
+            WaitForSingleObject(launched->process.get(), 5000);
+        if (startup_wait == WAIT_TIMEOUT) {
+            const auto detour = std::find_if(
+                applied.operations.begin(), applied.operations.end(),
+                [](const auto& operation) {
+                    return operation.op.kind ==
+                           PatchOperationKind::InstallOneShotDetour;
+                });
+            if (detour != applied.operations.end() &&
+                detour->allocated_base != 0) {
+                MobileUiTelemetry telemetry;
+                std::span bytes(reinterpret_cast<std::byte*>(&telemetry),
+                                sizeof(telemetry));
+                const uintptr_t address =
+                    detour->allocated_base +
+                    plan->mobile_ui_diagnostic->telemetry_offset;
+                auto read = patch::read_bytes(launched->process, address, bytes);
+                if (config_.verbose) {
+                    if (read) {
+                        const auto yes_no = [](uint32_t value) {
+                            return value != 0 ? "yes" : "no";
+                        };
+                        std::cout
+                            << "mobile-ui runtime:\n"
+                            << "  lifecycle-hits    "
+                            << telemetry.lifecycle_hits << "\n"
+                            << "  graph-ready       "
+                            << yes_no(telemetry.graph_ready) << "\n"
+                            << "  ui-ready          "
+                            << yes_no(telemetry.ui_ready) << "\n"
+                            << "  input-ready       "
+                            << yes_no(telemetry.input_ready) << "\n"
+                            << "  gui-set-called    "
+                            << yes_no(telemetry.gui_set_called) << "\n"
+                            << "  input-set-called  "
+                            << yes_no(telemetry.input_set_called) << "\n"
+                            << "  completed         "
+                            << yes_no(telemetry.completed) << "\n";
+                    } else {
+                        std::cout << "mobile-ui runtime: telemetry read failed: "
+                                  << read.error().message << "\n";
+                    }
+                }
+            }
+        } else if (startup_wait == WAIT_FAILED) {
+            return finish_failed({
+                &*launched, &applied, true,
+                Error::make(ErrorCode::OsError,
+                            "Mobile UI startup wait failed", GetLastError())});
+        }
+    }
+
+    const DWORD process_wait =
+        WaitForSingleObject(launched->process.get(), INFINITE);
+    if (process_wait != WAIT_OBJECT_0) {
+        return finish_failed({
+            &*launched, &applied, true,
+            Error::make(ErrorCode::OsError, "game process wait failed",
+                        GetLastError())});
+    }
     context.game_runtime_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - game_started)

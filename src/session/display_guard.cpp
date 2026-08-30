@@ -13,6 +13,11 @@ Result<void> restore_display_snapshot(const std::vector<JournalDisplay>& display
             entry.settings.width == 0 || entry.settings.height == 0) {
             continue;
         }
+        auto current = win32::query_current_settings(entry.settings.device_name);
+        if (current &&
+            win32::display_settings_equal(*current, entry.settings)) {
+            continue;
+        }
         if (auto restored =
                 win32::restore_display_settings(entry.settings);
             !restored) {

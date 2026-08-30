@@ -562,6 +562,14 @@ std::string_view to_string(SessionStage stage) {
 }
 
 std::filesystem::path journal_path() {
+    wchar_t override_path[32768];
+    const DWORD override_size = GetEnvironmentVariableW(
+        L"HOYOFLUX_STATE_DIR", override_path, std::size(override_path));
+    if (override_size > 0 && override_size < std::size(override_path)) {
+        return std::filesystem::path(
+                   std::wstring_view(override_path, override_size)) /
+               L"active-session.json";
+    }
     wchar_t* raw = nullptr;
     if (SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr,
                              &raw) != S_OK) {

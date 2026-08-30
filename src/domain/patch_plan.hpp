@@ -141,6 +141,17 @@ struct MobileUiDiagnostic {
     uintptr_t func_input_set{0};
     uintptr_t lifecycle_call_disp{0};
     uintptr_t lifecycle_original_callee{0};
+    uint32_t telemetry_offset{0};
+};
+
+struct MobileUiTelemetry {
+    uint32_t lifecycle_hits{0};
+    uint32_t graph_ready{0};
+    uint32_t ui_ready{0};
+    uint32_t input_ready{0};
+    uint32_t gui_set_called{0};
+    uint32_t input_set_called{0};
+    uint32_t completed{0};
 };
 
 // Flags for RemoteStateLayout::initial_flags.

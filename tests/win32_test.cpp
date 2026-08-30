@@ -300,6 +300,23 @@ TEST_CASE("display enumeration is read-only", "[win32][display]") {
     }
 }
 
+TEST_CASE("display settings equality covers the complete mode",
+          "[win32][display]") {
+    w32::DisplaySettings expected{L"\\\\.\\DISPLAY10", 2266, 1488, 144,
+                                  32, 0, 0, false};
+    auto same = expected;
+    CHECK(w32::display_settings_equal(expected, same));
+
+    same.refresh_rate = 120;
+    CHECK_FALSE(w32::display_settings_equal(expected, same));
+    same = expected;
+    same.position_x = 1;
+    CHECK_FALSE(w32::display_settings_equal(expected, same));
+    same = expected;
+    same.interlaced = true;
+    CHECK_FALSE(w32::display_settings_equal(expected, same));
+}
+
 TEST_CASE("unique handle RAII", "[win32][handle]") {
     using w32::UniqueHandle;
 
