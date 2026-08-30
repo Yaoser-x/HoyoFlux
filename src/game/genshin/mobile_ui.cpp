@@ -79,6 +79,13 @@ void patch_rel32(std::vector<std::byte>& code, size_t field, size_t target) {
     std::memcpy(code.data() + field, &disp, sizeof(disp));
 }
 
+void patch_rip_disp32_imm32(std::vector<std::byte>& code, size_t field,
+                            size_t target) {
+    // C7 05 disp32 imm32 uses RIP after both the displacement and immediate.
+    const int32_t disp = static_cast<int32_t>(target - (field + 8));
+    std::memcpy(code.data() + field, &disp, sizeof(disp));
+}
+
 struct BuiltStub {
     std::vector<std::byte> code;
     uint32_t telemetry_offset{0};
@@ -208,22 +215,29 @@ BuiltStub build_function_entry_stub(const MobileUiFields& fields) {
     patch_rel32(code, null_global_jump, done_label);
     patch_rel32(code, function_entry_hits,
                 telemetry + offsetof(MobileUiTelemetry, function_entry_hits));
-    patch_rel32(code, graph_ready,
-                telemetry + offsetof(MobileUiTelemetry, graph_ready));
-    patch_rel32(code, ui_ready,
-                telemetry + offsetof(MobileUiTelemetry, ui_ready));
-    patch_rel32(code, input_ready,
-                telemetry + offsetof(MobileUiTelemetry, input_ready));
-    patch_rel32(code, gui_set_called,
-                telemetry + offsetof(MobileUiTelemetry, gui_set_called));
-    patch_rel32(code, input_set_called,
-                telemetry + offsetof(MobileUiTelemetry, input_set_called));
-    patch_rel32(code, self_unhooked,
-                telemetry + offsetof(MobileUiTelemetry, self_unhooked));
-    patch_rel32(code, original_resumed,
-                telemetry + offsetof(MobileUiTelemetry, original_resumed));
-    patch_rel32(code, completed,
-                telemetry + offsetof(MobileUiTelemetry, completed));
+    patch_rip_disp32_imm32(
+        code, graph_ready,
+        telemetry + offsetof(MobileUiTelemetry, graph_ready));
+    patch_rip_disp32_imm32(
+        code, ui_ready, telemetry + offsetof(MobileUiTelemetry, ui_ready));
+    patch_rip_disp32_imm32(
+        code, input_ready,
+        telemetry + offsetof(MobileUiTelemetry, input_ready));
+    patch_rip_disp32_imm32(
+        code, gui_set_called,
+        telemetry + offsetof(MobileUiTelemetry, gui_set_called));
+    patch_rip_disp32_imm32(
+        code, input_set_called,
+        telemetry + offsetof(MobileUiTelemetry, input_set_called));
+    patch_rip_disp32_imm32(
+        code, self_unhooked,
+        telemetry + offsetof(MobileUiTelemetry, self_unhooked));
+    patch_rip_disp32_imm32(
+        code, original_resumed,
+        telemetry + offsetof(MobileUiTelemetry, original_resumed));
+    patch_rip_disp32_imm32(
+        code, completed,
+        telemetry + offsetof(MobileUiTelemetry, completed));
     return BuiltStub{std::move(code), static_cast<uint32_t>(telemetry),
                      static_cast<uint32_t>(original_bytes),
                      static_cast<uint32_t>(virtual_protect)};

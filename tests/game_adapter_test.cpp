@@ -16,6 +16,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -804,6 +806,43 @@ TEST_CASE("genshin mobile UI builder composes an upstream function-entry detour"
     REQUIRE(plan.mobile_ui_diagnostic.has_value());
     CHECK(plan.mobile_ui_diagnostic->lifecycle_call_disp_diagnostic == 0x6000);
     CHECK(plan.mobile_ui_diagnostic->lifecycle_function_entry == 0x7000);
+
+    // Every C7 05 disp32 imm32 telemetry setter must resolve from RIP after
+    // both disp32 and imm32 (disp field + 8), never into the following field
+    // or the INT3 padding after MobileUiTelemetry.
+    const size_t telemetry = plan.mobile_ui_diagnostic->telemetry_offset;
+    const std::array<size_t, 8> expected_targets{
+        telemetry + offsetof(MobileUiTelemetry, self_unhooked),
+        telemetry + offsetof(MobileUiTelemetry, original_resumed),
+        telemetry + offsetof(MobileUiTelemetry, graph_ready),
+        telemetry + offsetof(MobileUiTelemetry, ui_ready),
+        telemetry + offsetof(MobileUiTelemetry, gui_set_called),
+        telemetry + offsetof(MobileUiTelemetry, input_ready),
+        telemetry + offsetof(MobileUiTelemetry, input_set_called),
+        telemetry + offsetof(MobileUiTelemetry, completed),
+    };
+    std::vector<size_t> effective_targets;
+    for (size_t i = 0; i + 10 <= stub.size(); ++i) {
+        if (stub[i] != std::byte{0xC7} || stub[i + 1] != std::byte{0x05}) {
+            continue;
+        }
+        int32_t displacement = 0;
+        uint32_t immediate = 0;
+        std::memcpy(&displacement, stub.data() + i + 2,
+                    sizeof(displacement));
+        std::memcpy(&immediate, stub.data() + i + 6, sizeof(immediate));
+        if (immediate == 1) {
+            const size_t disp_field = i + 2;
+            effective_targets.push_back(static_cast<size_t>(
+                static_cast<int64_t>(disp_field + 8) + displacement));
+        }
+    }
+    REQUIRE(effective_targets.size() == expected_targets.size());
+    CHECK(effective_targets == std::vector<size_t>(expected_targets.begin(),
+                                                    expected_targets.end()));
+    CHECK(effective_targets.back() >= telemetry);
+    CHECK(effective_targets.back() + sizeof(uint32_t) <=
+          telemetry + sizeof(MobileUiTelemetry));
 
     // Missing signatures are an explicit error, never a silent skip.
     PatchPlan empty_plan;
