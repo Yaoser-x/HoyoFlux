@@ -21,6 +21,13 @@ constexpr uintmax_t kOldExeThresholdBytes = 0x800000;  // legacy: < 8 MB == old
 constexpr std::string_view kFpsIdsByPriority[] = {
     "genshin.fps.5.5", "genshin.fps.5.4", "genshin.fps.3.7-5.3", "genshin.fps.old"};
 
+#if defined(HOYOFLUX_EXPERIMENTAL_MOBILE_UI)
+constexpr bool kMobileUiAvailable = true;
+#else
+constexpr bool kMobileUiAvailable =
+    genshin::GenshinMobileUiPatchBuilder::kPayloadValidated;
+#endif
+
 }  // namespace
 
 GameId GenshinAdapter::id() const { return GameId::Genshin; }
@@ -84,9 +91,15 @@ CapabilityReport GenshinAdapter::capabilities(const GameInstall& /*install*/,
 
     // F5: bootstrap mechanism exists (stub install + remote invocation);
     // the payload stays gated off until validated on the live game (B1).
-    add(Capability::MobileUi, CapabilityStatus::Unsupported,
-        "Mobile UI is not implemented for Genshin in this build: the "
-        "bootstrap mechanism exists but its payload is unvalidated (plan B1)");
+    add(Capability::MobileUi,
+        kMobileUiAvailable ? CapabilityStatus::Supported
+                           : CapabilityStatus::Unsupported,
+        kMobileUiAvailable
+            ? "EXPERIMENTAL B1 validation build: unvalidated Mobile UI "
+              "bootstrap enabled"
+            : "Mobile UI is not implemented for Genshin in this build: the "
+              "bootstrap mechanism exists but its payload is unvalidated "
+              "(plan B1)");
 
     add(Capability::CustomDpi,
         profile.ui.dpi_scale.has_value() ? CapabilityStatus::Supported
@@ -278,7 +291,7 @@ Result<PatchPlan> GenshinAdapter::build_patch_plan(const PatchContext& context) 
     // gate below refuses to patch - the capability contract reports MobileUi
     // as Unsupported, so validate_profile normally stops the launch first.
     if (context.profile.ui.mobile_ui) {
-        if (!genshin::GenshinMobileUiPatchBuilder::kPayloadValidated) {
+        if (!kMobileUiAvailable) {
             return std::unexpected(Error::make(
                 ErrorCode::NotSupported,
                 "Mobile UI stub payload has not been validated against the "

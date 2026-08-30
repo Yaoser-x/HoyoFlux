@@ -524,16 +524,26 @@ TEST_CASE("unsupported features stop validation with a reason",
     const GameInstall genshin_install{GameId::Genshin, true, "YuanShen.exe"};
     hoyoflux::game::GenshinAdapter adapter;
 
-    SECTION("mobile_ui is the plan's canonical example") {
+    SECTION("mobile_ui follows the build's validation gate") {
         Profile profile;
         profile.ui.mobile_ui = true;
+        const auto report = adapter.capabilities(genshin_install, profile);
         auto valid = game::validate_profile(
-            profile, adapter.capabilities(genshin_install, profile));
-        REQUIRE_FALSE(valid.has_value());
-        CHECK(valid.error().code == ErrorCode::NotSupported);
-        CHECK(valid.error().message.find(
-                  "Mobile UI is not implemented for Genshin") !=
-              std::string::npos);
+            profile, report);
+        if (report.status_of(Capability::MobileUi) ==
+            CapabilityStatus::Supported) {
+            REQUIRE(valid.has_value());
+            const auto* entry = report.find(Capability::MobileUi);
+            REQUIRE(entry != nullptr);
+            CHECK(entry->reason.find("EXPERIMENTAL B1 validation build") !=
+                  std::string::npos);
+        } else {
+            REQUIRE_FALSE(valid.has_value());
+            CHECK(valid.error().code == ErrorCode::NotSupported);
+            CHECK(valid.error().message.find(
+                      "Mobile UI is not implemented for Genshin") !=
+                  std::string::npos);
+        }
     }
 
     SECTION("monitor selection has no verified mechanism") {
@@ -722,7 +732,7 @@ TEST_CASE("genshin persistent state snapshot reports absence honestly",
 // F1 render launch pipeline
 // ---------------------------------------------------------------------------
 
-TEST_CASE("mobile UI gate refuses unvalidated payloads", "[game][mobileui]") {
+TEST_CASE("mobile UI patch plan follows the build gate", "[game][mobileui]") {
     hoyoflux::game::GenshinAdapter genshin;
     std::vector<ResolvedSignature> signatures;
     signatures.push_back(
@@ -736,9 +746,18 @@ TEST_CASE("mobile UI gate refuses unvalidated payloads", "[game][mobileui]") {
     profile.ui.mobile_ui = true;
     game::PatchContext ctx{signatures, profile, 0x7FF600000000, false};
     auto plan = genshin.build_patch_plan(ctx);
-    REQUIRE_FALSE(plan.has_value());
-    CHECK(plan.error().code == ErrorCode::NotSupported);
-    CHECK(plan.error().message.find("not been validated") != std::string::npos);
+    const GameInstall install{GameId::Genshin, true, "YuanShen.exe"};
+    const auto report = genshin.capabilities(install, profile);
+    if (report.status_of(Capability::MobileUi) == CapabilityStatus::Supported) {
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->operations.size() == 3);
+        CHECK(plan->operations[1].kind == PatchOperationKind::InstallCodeStub);
+        CHECK(plan->operations[2].kind == PatchOperationKind::InvokeBootstrap);
+    } else {
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error().code == ErrorCode::NotSupported);
+        CHECK(plan.error().message.find("not been validated") != std::string::npos);
+    }
 }
 
 TEST_CASE("mobile UI builders compose bootstrap ops from resolved signatures",

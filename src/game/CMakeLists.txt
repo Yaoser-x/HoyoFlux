@@ -15,6 +15,13 @@ add_library(hoyoflux_game STATIC
 
 target_include_directories(hoyoflux_game PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
+if(HOYOFLUX_EXPERIMENTAL_MOBILE_UI)
+  target_compile_definitions(
+    hoyoflux_game
+    PRIVATE HOYOFLUX_EXPERIMENTAL_MOBILE_UI=1
+  )
+endif()
+
 target_link_libraries(hoyoflux_game
   PUBLIC hoyoflux_scan hoyoflux_platform_win32 hoyoflux_domain
 )
