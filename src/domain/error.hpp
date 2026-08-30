@@ -45,6 +45,7 @@ enum class ErrorCode {
     // session / config
     SessionFailed,
     ProfileNotFound,
+    AutoProfileAmbiguous,
     ProfileInvalid,
     ConfigParseFailed,
     JournalCorrupt,
@@ -85,6 +86,7 @@ using Result = std::expected<T, Error>;
     case RemoteWriteFailed: return "remote-write-failed";
     case SessionFailed: return "session-failed";
     case ProfileNotFound: return "profile-not-found";
+    case AutoProfileAmbiguous: return "auto-profile-ambiguous";
     case ProfileInvalid: return "profile-invalid";
     case ConfigParseFailed: return "config-parse-failed";
     case JournalCorrupt: return "journal-corrupt";

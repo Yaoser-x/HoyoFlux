@@ -248,6 +248,55 @@ int cmd_profile_show(const std::string& id) {
     return 0;
 }
 
+int cmd_profile_match(const std::string& game_text) {
+    const auto game = parse_game_id(game_text);
+    auto config = profile::load_config(config_path());
+    if (!config) {
+        std::cout << "error: config " << config.error().message << "\n";
+        return 1;
+    }
+    auto displays = win32::enumerate_displays();
+    if (!displays) {
+        std::cout << "error: displays " << displays.error().message << "\n";
+        return 1;
+    }
+    auto decision = profile::resolve_auto_profile(*config, game, *displays);
+    if (!decision) {
+        std::cout << "error: " << to_string(decision.error().code) << " "
+                  << decision.error().message << "\n";
+        return 1;
+    }
+    std::cout << "Auto profile evaluation: " << to_string(game)
+              << "\n\nDisplays\n";
+    for (const auto& display : decision->displays) {
+        std::cout << "  " << narrow(display.info.device_name) << "\n"
+                  << "    mode:       " << display.resolution.width << "x"
+                  << display.resolution.height;
+        if (display.refresh_rate != 0) {
+            std::cout << "@" << display.refresh_rate;
+        }
+        std::cout << "\n    primary:    "
+                  << (display.info.is_primary ? "yes" : "no") << "\n";
+    }
+    std::cout << "\nCandidates\n";
+    for (const auto& candidate : decision->candidates) {
+        std::cout << "  " << candidate.profile_id;
+        if (candidate.specificity < 0) {
+            std::cout << "  no match\n";
+        } else {
+            std::cout << "\n    display:     " << *candidate.display_index
+                      << "\n    specificity: " << candidate.specificity
+                      << "\n    priority:    " << candidate.priority << "\n";
+        }
+    }
+    std::cout << "\nSelected\n  " << decision->profile.id;
+    if (decision->used_fallback) {
+        std::cout << " [fallback]";
+    }
+    std::cout << "\n";
+    return 0;
+}
+
 // Read-only dump of a game's persistent display settings (plan §7.2). This
 // is the A/B experiment tool: dump before a session, dump after, diff the
 // output. It never writes anything.
@@ -412,6 +461,12 @@ int main() {
             std::cout << config_path().string() << "\n";
             return 0;
         });
+    std::string match_game;
+    profile_cmd->add_subcommand("match", "explain automatic profile selection")
+        ->callback([&] { exit_code = cmd_profile_match(match_game); })
+        ->add_option("game", match_game, "genshin | starrail")
+        ->check(CLI::IsMember({"genshin", "starrail"}))
+        ->required();
 
     app.add_subcommand("doctor", "diagnose the environment (read-only)")
         ->callback([&] { exit_code = app::run_doctor(verbose); })

@@ -17,6 +17,8 @@ TEST_CASE("default config parses into the built-in presets",
     auto config = profile::parse_config(profile::default_config_toml());
     REQUIRE(config.has_value());
     REQUIRE(config->profiles.size() == 4);
+    CHECK(config->genshin_default == "desktop");
+    CHECK(config->starrail_default == "starrail_desktop");
 
     auto desktop = profile::find_profile(*config, "desktop");
     REQUIRE(desktop.has_value());
@@ -171,11 +173,126 @@ TEST_CASE("auto matching picks iPad mini profile for its exact mode",
     CHECK(mobile->id == "ipad");
     CHECK(mobile->ui.mobile_ui);
 
-    // No starrail profile at all -> error, not a silent wrong pick.
+    // Star Rail has its own deterministic fallback.
     auto starrail =
         profile::match_auto_profile(*config, GameId::StarRail, {ipad_mini});
-    REQUIRE_FALSE(starrail.has_value());
-    CHECK(starrail.error().code == ErrorCode::ProfileNotFound);
+    REQUIRE(starrail.has_value());
+    CHECK(starrail->id == "starrail_desktop");
+}
+
+TEST_CASE("auto ranking keeps specificity separate from priority",
+          "[profile][matcher][b1-8]") {
+    auto config = profile::parse_config(R"(
+[defaults]
+genshin = "desktop"
+[profiles.desktop]
+game = "genshin"
+[profiles.orientation]
+game = "genshin"
+[profiles.orientation.match]
+auto_select = true
+portrait = false
+priority = 1000
+[profiles.exact]
+game = "genshin"
+[profiles.exact.match]
+auto_select = true
+resolution = "2560x1440"
+priority = 0
+)");
+    REQUIRE(config.has_value());
+    win32::DisplayInfo display;
+    display.index = 7;
+    display.is_attached = true;
+    display.right = 2560;
+    display.bottom = 1440;
+    auto decision = profile::resolve_auto_profile(*config, GameId::Genshin,
+                                                  {display});
+    REQUIRE(decision.has_value());
+    CHECK(decision->profile.id == "exact");
+    CHECK(decision->specificity == 100);
+    CHECK(decision->priority == 0);
+    REQUIRE(decision->display_index.has_value());
+    CHECK(*decision->display_index == 7);
+}
+
+TEST_CASE("auto priority breaks equal specificity and equal rank is ambiguous",
+          "[profile][matcher][b1-8]") {
+    const auto make_config = [](int second_priority) {
+        return profile::parse_config(
+            "[profiles.first]\ngame=\"genshin\"\n"
+            "[profiles.first.match]\nauto_select=true\nportrait=false\npriority=10\n"
+            "[profiles.second]\ngame=\"genshin\"\n"
+            "[profiles.second.match]\nauto_select=true\nportrait=false\npriority=" +
+            std::to_string(second_priority) + "\n");
+    };
+    win32::DisplayInfo display;
+    display.is_attached = true;
+    display.right = 1920;
+    display.bottom = 1080;
+    auto ranked_config = make_config(20);
+    REQUIRE(ranked_config.has_value());
+    auto ranked = profile::resolve_auto_profile(*ranked_config, GameId::Genshin,
+                                                {display});
+    REQUIRE(ranked.has_value());
+    CHECK(ranked->profile.id == "second");
+    auto tied_config = make_config(10);
+    REQUIRE(tied_config.has_value());
+    auto tied = profile::resolve_auto_profile(*tied_config, GameId::Genshin,
+                                              {display});
+    REQUIRE_FALSE(tied.has_value());
+    CHECK(tied.error().code == ErrorCode::AutoProfileAmbiguous);
+    CHECK(tied.error().message.find("first") != std::string::npos);
+    CHECK(tied.error().message.find("second") != std::string::npos);
+}
+
+TEST_CASE("per-game defaults precede the legacy fallback",
+          "[profile][matcher][b1-8]") {
+    auto config = profile::parse_config(R"(
+default_profile = "legacy"
+[defaults]
+genshin = "genshin_desktop"
+starrail = "starrail_desktop"
+[profiles.legacy]
+game = "genshin"
+[profiles.genshin_desktop]
+game = "genshin"
+[profiles.starrail_desktop]
+game = "starrail"
+)");
+    REQUIRE(config.has_value());
+    auto genshin = profile::resolve_auto_profile(*config, GameId::Genshin, {});
+    REQUIRE(genshin.has_value());
+    CHECK(genshin->profile.id == "genshin_desktop");
+    CHECK(genshin->used_fallback);
+    auto starrail = profile::resolve_auto_profile(*config, GameId::StarRail, {});
+    REQUIRE(starrail.has_value());
+    CHECK(starrail->profile.id == "starrail_desktop");
+    auto legacy = profile::parse_config(R"(
+default_profile = "legacy"
+[profiles.legacy]
+game = "genshin"
+)");
+    REQUIRE(legacy.has_value());
+    auto legacy_result = profile::resolve_auto_profile(*legacy, GameId::Genshin, {});
+    REQUIRE(legacy_result.has_value());
+    CHECK(legacy_result->profile.id == "legacy");
+}
+
+TEST_CASE("detached displays do not participate in auto matching",
+          "[profile][matcher][b1-8]") {
+    auto config = profile::parse_config(profile::default_config_toml());
+    REQUIRE(config.has_value());
+    win32::DisplayInfo detached;
+    detached.is_attached = false;
+    detached.right = 2266;
+    detached.bottom = 1488;
+    auto decision = profile::resolve_auto_profile(*config, GameId::Genshin,
+                                                  {detached});
+    REQUIRE(decision.has_value());
+    CHECK(decision->profile.id == "desktop");
+    CHECK(decision->used_fallback);
+    CHECK(decision->displays.empty());
 }
 
 TEST_CASE("auto matching: identity beats geometry, manual never auto-picked",

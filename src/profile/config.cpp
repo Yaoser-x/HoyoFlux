@@ -258,6 +258,10 @@ std::string default_config_toml() {
 schema = 1
 default_profile = "desktop"
 
+[defaults]
+genshin = "desktop"
+starrail = "starrail_desktop"
+
 [profiles.desktop]
 game = "genshin"
 
@@ -281,6 +285,7 @@ game = "genshin"
 [profiles.ipad.match]
 auto_select = true
 resolution = "2266x1488"
+priority = 100
 
 [profiles.ipad.render]
 resolution = "2266x1488"
@@ -357,6 +362,15 @@ Result<Config> parse_config(std::string_view toml_text) {
         default_profile && default_profile->is_string()) {
         config.default_profile = *default_profile->value<std::string>();
     }
+    if (const auto* defaults = root.get("defaults");
+        defaults && defaults->is_table()) {
+        if (const auto value = opt_string(*defaults->as_table(), "genshin")) {
+            config.genshin_default = *value;
+        }
+        if (const auto value = opt_string(*defaults->as_table(), "starrail")) {
+            config.starrail_default = *value;
+        }
+    }
     return config;
 }
 
@@ -411,18 +425,8 @@ Result<Profile> find_profile(const Config& config, std::string_view id) {
 
 namespace {
 
-// One display with its current mode, for matcher scoring.
-struct DisplayFacts {
-    win32::DisplayInfo info;
-    Resolution current{0, 0};
-};
-
 [[nodiscard]] float display_aspect(const DisplayFacts& display) {
-    if (display.current.height == 0) {
-        return 0.0f;
-    }
-    return static_cast<float>(display.current.width) /
-           static_cast<float>(display.current.height);
+    return display.aspect_ratio;
 }
 
 [[nodiscard]] bool aspect_close(float a, float b) {
@@ -447,7 +451,7 @@ struct DisplayFacts {
         matched_any_predicate = true;
     }
     if (match.resolution.has_value()) {
-        if (*match.resolution != display.current) {
+        if (*match.resolution != display.resolution) {
             return -1;
         }
         score += 100;
@@ -461,11 +465,7 @@ struct DisplayFacts {
         matched_any_predicate = true;
     }
     if (match.portrait.has_value()) {
-        const bool display_is_portrait =
-            display.info.is_attached &&
-            display.info.bottom - display.info.top >
-                display.info.right - display.info.left;
-        if (*match.portrait != display_is_portrait) {
+        if (*match.portrait != display.portrait) {
             return -1;
         }
         score += 1;
@@ -476,7 +476,7 @@ struct DisplayFacts {
 
 }  // namespace
 
-Result<Profile> match_auto_profile(
+Result<AutoProfileDecision> resolve_auto_profile(
     const Config& config, GameId game,
     const std::vector<win32::DisplayInfo>& displays) {
     // Gather current modes once: geometry alone cannot answer resolution
@@ -486,17 +486,24 @@ Result<Profile> match_auto_profile(
         if (!display.is_attached) {
             continue;
         }
-        DisplayFacts entry{display, {0, 0}};
+        DisplayFacts entry;
+        entry.info = display;
         if (auto settings = win32::query_current_settings(display.device_name);
             settings) {
-            entry.current = Resolution{settings->width, settings->height};
+            entry.resolution = Resolution{settings->width, settings->height};
+            entry.refresh_rate = settings->refresh_rate;
         } else if (display.right > display.left &&
                    display.bottom > display.top) {
             // No queryable mode (headless/virtual display): the geometry is
             // the best available statement of the current resolution.
-            entry.current = Resolution{
+            entry.resolution = Resolution{
                 static_cast<uint32_t>(display.right - display.left),
                 static_cast<uint32_t>(display.bottom - display.top)};
+        }
+        if (entry.resolution.height != 0) {
+            entry.aspect_ratio = static_cast<float>(entry.resolution.width) /
+                                 static_cast<float>(entry.resolution.height);
+            entry.portrait = entry.resolution.height > entry.resolution.width;
         }
         facts.push_back(std::move(entry));
     }
@@ -504,39 +511,97 @@ Result<Profile> match_auto_profile(
     // Plan section 17.3: manual profiles are NEVER auto-selected. The
     // default profile is the final fallback (the user designated it).
     const Profile* best = nullptr;
-    int best_score = -1;
+    const DisplayFacts* best_display = nullptr;
+    int best_specificity = -1;
+    int best_priority = 0;
+    std::vector<const Profile*> tied_profiles;
     const Profile* fallback = nullptr;
+    std::vector<AutoCandidateDecision> candidates;
+    const std::string& per_game_default =
+        game == GameId::Genshin ? config.genshin_default
+                                : config.starrail_default;
+    const std::string& fallback_id =
+        !per_game_default.empty() ? per_game_default : config.default_profile;
     for (const auto& profile : config.profiles) {
         if (profile.game != game) {
             continue;
         }
-        if (profile.id == config.default_profile) {
+        if (profile.id == fallback_id) {
             fallback = &profile;
         }
         if (!profile.match.auto_select) {
             continue;
         }
+        AutoCandidateDecision candidate{profile.id, std::nullopt, -1,
+                                        profile.match.priority};
         for (const auto& display : facts) {
             const int score = match_score(profile, display);
-            if (score >= 0 &&
-                (score + profile.match.priority >
-                     best_score + (best ? best->match.priority : 0) ||
-                 best == nullptr)) {
+            if (score > candidate.specificity) {
+                candidate.display_index = display.info.index;
+                candidate.specificity = score;
+            }
+        }
+        candidates.push_back(candidate);
+        if (candidate.specificity >= 0) {
+            const bool outranks = best == nullptr ||
+                candidate.specificity > best_specificity ||
+                (candidate.specificity == best_specificity &&
+                 candidate.priority > best_priority);
+            if (outranks) {
                 best = &profile;
-                best_score = score;
+                best_specificity = candidate.specificity;
+                best_priority = candidate.priority;
+                best_display = nullptr;
+                for (const auto& display : facts) {
+                    if (display.info.index == *candidate.display_index) {
+                        best_display = &display;
+                        break;
+                    }
+                }
+                tied_profiles.clear();
+                tied_profiles.push_back(&profile);
+            } else if (candidate.specificity == best_specificity &&
+                       candidate.priority == best_priority) {
+                tied_profiles.push_back(&profile);
             }
         }
     }
+    if (tied_profiles.size() > 1) {
+        std::string message = "auto profile is ambiguous:";
+        for (const auto* profile : tied_profiles) {
+            message += "\n  " + profile->id;
+        }
+        message += "\nall match at specificity=" +
+                   std::to_string(best_specificity) + " priority=" +
+                   std::to_string(best_priority);
+        return std::unexpected(Error::make(ErrorCode::AutoProfileAmbiguous,
+                                           std::move(message)));
+    }
     if (best != nullptr) {
-        return *best;
+        return AutoProfileDecision{*best, false,
+                                   best_display ? std::optional(best_display->info.index)
+                                                : std::nullopt,
+                                   best_specificity, best_priority,
+                                   std::move(facts), std::move(candidates)};
     }
     if (fallback != nullptr) {
-        return *fallback;
+        return AutoProfileDecision{*fallback, true, std::nullopt, 0, 0,
+                                   std::move(facts), std::move(candidates)};
     }
     return std::unexpected(Error::make(
         ErrorCode::ProfileNotFound,
         "no matching auto profile for game '" + std::string(to_string(game)) +
             "' (add one to config.toml)"));
+}
+
+Result<Profile> match_auto_profile(
+    const Config& config, GameId game,
+    const std::vector<win32::DisplayInfo>& displays) {
+    auto decision = resolve_auto_profile(config, game, displays);
+    if (!decision) {
+        return std::unexpected(decision.error());
+    }
+    return decision->profile;
 }
 
 }  // namespace hoyoflux::profile

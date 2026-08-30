@@ -48,6 +48,7 @@
 #include "platform/win32/display.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,7 +57,34 @@ namespace hoyoflux::profile {
 
 struct Config {
     std::vector<Profile> profiles;
-    std::string default_profile;  // meaningful when profiles are present
+    std::string default_profile;  // legacy fallback
+    std::string genshin_default;
+    std::string starrail_default;
+};
+
+struct DisplayFacts {
+    win32::DisplayInfo info;
+    Resolution resolution{0, 0};
+    uint32_t refresh_rate{0};
+    float aspect_ratio{0.0f};
+    bool portrait{false};
+};
+
+struct AutoCandidateDecision {
+    std::string profile_id;
+    std::optional<uint32_t> display_index;
+    int specificity{-1};
+    int priority{0};
+};
+
+struct AutoProfileDecision {
+    Profile profile;
+    bool used_fallback{false};
+    std::optional<uint32_t> display_index;
+    int specificity{0};
+    int priority{0};
+    std::vector<DisplayFacts> displays;
+    std::vector<AutoCandidateDecision> candidates;
 };
 
 // The document written when no config file exists (also the documentation).
@@ -79,5 +107,9 @@ Result<Profile> find_profile(const Config& config, std::string_view id);
 // for the game; otherwise the first non-mobile profile for the game.
 Result<Profile> match_auto_profile(const Config& config, GameId game,
                                    const std::vector<win32::DisplayInfo>& displays);
+
+Result<AutoProfileDecision> resolve_auto_profile(
+    const Config& config, GameId game,
+    const std::vector<win32::DisplayInfo>& displays);
 
 }  // namespace hoyoflux::profile
