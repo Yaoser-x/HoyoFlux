@@ -47,5 +47,7 @@ Result<ResolvedLaunch> resolve_launch(const profile::Config& config,
                                       const LaunchOptions& options);
 Result<LaunchOutcome> run_launch(const profile::Config& config,
                                  const LaunchOptions& options);
+Result<LaunchOutcome> run_resolved_launch(const LaunchOptions& options,
+                                          ResolvedLaunch resolved);
 
 }  // namespace hoyoflux::app

@@ -74,9 +74,14 @@ Result<LaunchOutcome> run_launch(const profile::Config& config,
     if (!resolved) {
         return std::unexpected(resolved.error());
     }
+    return run_resolved_launch(options, std::move(*resolved));
+}
+
+Result<LaunchOutcome> run_resolved_launch(const LaunchOptions& options,
+                                          ResolvedLaunch resolved) {
     LaunchRequest request;
     request.game = options.game;
-    request.profile = resolved->profile;
+    request.profile = resolved.profile;
     request.exe_override = options.exe;
     request.game_args = options.passthrough;
 
@@ -89,7 +94,7 @@ Result<LaunchOutcome> run_launch(const profile::Config& config,
     if (!context) {
         return std::unexpected(context.error());
     }
-    return LaunchOutcome{std::move(*resolved), std::move(*context)};
+    return LaunchOutcome{std::move(resolved), std::move(*context)};
 }
 
 }  // namespace hoyoflux::app

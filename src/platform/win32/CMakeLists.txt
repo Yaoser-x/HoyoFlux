@@ -3,7 +3,9 @@
 # referenced from here.
 
 add_library(hoyoflux_platform_win32 STATIC
+  console.cpp
   display.cpp
+  notification.cpp
   pe.cpp
   privilege.cpp
   process.cpp

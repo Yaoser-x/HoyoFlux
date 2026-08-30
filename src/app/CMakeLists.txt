@@ -3,7 +3,7 @@
 
 enable_language(RC)
 
-add_executable(hoyoflux
+add_executable(hoyoflux WIN32
   main.cpp
   doctor.cpp
   launch_service.cpp

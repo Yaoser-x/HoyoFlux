@@ -34,8 +34,8 @@ platform   scan
 | patch | `src/patch` | 补丁引擎、远程内存与远程状态。 |
 | game | `src/game` | 游戏知识：适配器与各游戏签名。 |
 | session | `src/session` | 会话引擎、Journal、显示守护与回滚。 |
-| app | `src/app` | 命令分发、验证与组装。 |
-| frontend | `src/frontend` | CLI／托盘。 |
+| app | `src/app` | One-click／CLI 分流、LaunchService 组装与命令分发。 |
+| frontend | Win32 Shell／CLI | 无主窗口通知与父控制台输出。 |
 
 ## 设计决策
 
@@ -45,6 +45,8 @@ platform   scan
 - **GameAdapter 生成 PatchPlan，PatchEngine 负责执行。** 游戏知识与内存写入解耦。
 - **TOML 配置只解析一次。** 配置解析不进入热路径。
 - **统一 UTF-8。** 旧项目使用 UTF-16LE 源文件，本项目全部采用 UTF-8。
+- **Auto 是无状态决策。** 显示事实只采集一次，匹配按 `(specificity, priority)` 排序；同秩候选报错，无匹配时使用 per-game fallback，不保存上次 Profile。
+- **单一启动路径。** One-click 与 CLI 都先经 `LaunchService` 解析 Profile 和覆盖项，再调用未经侵入修改的 `SessionEngine`。通知是 best-effort，不参与会话成败。
 
 ## 会话生命周期
 

@@ -6,6 +6,7 @@
 #include "platform/win32/privilege.hpp"
 #include "platform/win32/process.hpp"
 #include "platform/win32/registry.hpp"
+#include "platform/win32/notification.hpp"
 #include "platform/win32/unique_handle.hpp"
 
 #include <windows.h>
@@ -340,4 +341,18 @@ TEST_CASE("privilege probe is callable", "[win32][privilege]") {
     // Must not crash; the result depends on how the test was launched.
     const bool elevated = w32::is_elevated();
     CHECK((elevated || !elevated));
+}
+
+TEST_CASE("notification failure is explicitly best effort",
+          "[win32][notification][b1-8]") {
+    bool called = false;
+    w32::NotificationFunction failing =
+        [&](std::wstring_view, std::wstring_view, w32::NotificationKind) {
+            called = true;
+            return Result<void>(std::unexpected(Error::make(
+                ErrorCode::OsError, "synthetic notification failure")));
+        };
+    w32::notify_best_effort(failing, L"HoyoFlux", L"test",
+                            w32::NotificationKind::Info);
+    CHECK(called);
 }
