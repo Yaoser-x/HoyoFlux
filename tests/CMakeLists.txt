@@ -62,3 +62,8 @@ add_executable(profile_test profile_test.cpp)
 target_link_libraries(profile_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
                       hoyoflux_profile Catch2::Catch2WithMain)
 add_test(NAME profile_test COMMAND profile_test)
+
+add_executable(app_test app_test.cpp ../src/app/launch_service.cpp)
+target_link_libraries(app_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
+                      hoyoflux_profile hoyoflux_session Catch2::Catch2WithMain)
+add_test(NAME app_test COMMAND app_test)

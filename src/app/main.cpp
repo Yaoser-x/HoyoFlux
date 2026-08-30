@@ -7,6 +7,7 @@
 //   version
 
 #include "app/doctor.hpp"
+#include "app/launch_service.hpp"
 #include "domain/error.hpp"
 #include "domain/game.hpp"
 #include "domain/launch_request.hpp"
@@ -73,49 +74,11 @@ std::wstring widen(std::string_view utf8) {
 // prerelease - the tree must not present itself as final 1.0.0.
 constexpr const char* kVersion = HOYOFLUX_VERSION_STRING;
 
-std::filesystem::path config_path() {
-    return session::journal_path().parent_path().parent_path() / "config.toml";
-}
-
-Result<Profile> resolve_profile(const profile::Config& config, GameId game,
-                                const std::string& name) {
-    if (name == "auto") {
-        auto displays = win32::enumerate_displays();
-        if (!displays) {
-            return std::unexpected(displays.error());
-        }
-        return profile::match_auto_profile(config, game, *displays);
-    }
-    if (name.empty()) {
-        if (!config.default_profile.empty()) {
-            return profile::find_profile(config, config.default_profile);
-        }
-        return std::unexpected(Error::make(
-            ErrorCode::ProfileNotFound,
-            "no profile given and no default_profile set in config.toml"));
-    }
-    return profile::find_profile(config, name);
-}
-
 GameId parse_game_id(const std::string& text) {
     if (text == "genshin") {
         return GameId::Genshin;
     }
     return GameId::StarRail;  // CLI11 restricts the input beforehand
-}
-
-void apply_overrides(Profile& profile, const std::optional<uint32_t>& fps,
-                     const std::optional<bool>& mobile_ui,
-                     const std::optional<float>& dpi_scale) {
-    if (fps) {
-        profile.runtime.fps = *fps;
-    }
-    if (mobile_ui) {
-        profile.ui.mobile_ui = *mobile_ui;
-    }
-    if (dpi_scale) {
-        profile.ui.dpi_scale = *dpi_scale;
-    }
 }
 
 int cmd_launch(const std::string& game_text, const std::string& profile_name,
@@ -124,70 +87,54 @@ int cmd_launch(const std::string& game_text, const std::string& profile_name,
                const std::optional<float>& dpi_scale,
                const std::string& region_text, const std::optional<std::string>& exe,
                const std::vector<std::wstring>& passthrough, bool verbose) {
-    const auto game = parse_game_id(game_text);
-
-    auto config = profile::load_config(config_path());
+    app::LaunchOptions options;
+    options.game = parse_game_id(game_text);
+    options.profile = profile_name;
+    options.passthrough = passthrough;
+    options.fps_override = fps;
+    options.mobile_ui_override = mobile_ui;
+    options.dpi_override = dpi_scale;
+    options.verbose = verbose;
+    if (region_text == "cn") {
+        options.region = game::Region::Cn;
+    } else if (region_text == "global") {
+        options.region = game::Region::Global;
+    }
+    if (exe) {
+        options.exe = std::filesystem::path(widen(*exe));
+    }
+    auto config = profile::load_config(app::config_path());
     if (!config) {
         std::cout << "error: config " << config.error().message << "\n";
         return 1;
     }
-    auto profile = resolve_profile(*config, game, profile_name);
-    if (!profile) {
-        std::cout << "error: profile " << profile.error().message << "\n";
-        return 1;
-    }
-    apply_overrides(*profile, fps, mobile_ui, dpi_scale);
-
-    game::Region region = game::Region::Auto;
-    if (region_text == "cn") {
-        region = game::Region::Cn;
-    } else if (region_text == "global") {
-        region = game::Region::Global;
-    }
-
-    LaunchRequest request;
-    request.game = game;
-    request.profile = *profile;
-    request.game_args = passthrough;  // after `--`: verbatim game arguments
-
-    session::SessionConfig session_config;
-    session_config.region = region;
-    session_config.verbose = verbose;
-    if (exe) {
-        request.exe_override = std::filesystem::path(widen(*exe));
-    }
-
-    auto adapter = game::make_adapter(game);
-    session::SessionEngine engine(*adapter, session_config);
-
     const auto started = std::chrono::steady_clock::now();
     if (verbose) {
-        std::cout << "session: game=" << to_string(game)
-                  << " profile=" << profile->id
-                  << " fps=" << profile->runtime.fps
-                  << " mobile_ui=" << (profile->ui.mobile_ui ? "yes" : "no")
+        std::cout << "session: game=" << to_string(options.game)
+                  << " requested_profile=" << options.profile
                   << " passthrough=" << passthrough.size() << " arg(s)\n";
     }
-    auto context = engine.run(request);
+    auto outcome = app::run_launch(*config, options);
     const auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(
                              std::chrono::steady_clock::now() - started)
                              .count();
 
-    if (!context) {
-        std::cout << "error: " << to_string(context.error().code) << " "
-                  << context.error().message << "\n";
+    if (!outcome) {
+        std::cout << "error: " << to_string(outcome.error().code) << " "
+                  << outcome.error().message << "\n";
         return 1;
     }
-    std::cout << "session " << context->id << " completed: game=" << to_string(game)
-              << " profile=" << profile->id << " pid=" << context->pid
-              << " exit_code=" << context->process_exit_code
-              << " game_runtime=" << (context->game_runtime_ms / 1000.0)
+    std::cout << "session " << outcome->session.id << " completed: game="
+              << to_string(options.game) << " profile="
+              << outcome->resolved.profile.id << " pid=" << outcome->session.pid
+              << " exit_code=" << outcome->session.process_exit_code
+              << " game_runtime=" << (outcome->session.game_runtime_ms / 1000.0)
               << "s duration=" << seconds << "s\n";
     return 0;
 }
 
 int cmd_profile_list() {
-    auto config = profile::load_config(config_path());
+    auto config = profile::load_config(app::config_path());
     if (!config) {
         std::cout << "error: config " << config.error().message << "\n";
         return 1;
@@ -203,7 +150,7 @@ int cmd_profile_list() {
 }
 
 int cmd_profile_show(const std::string& id) {
-    auto config = profile::load_config(config_path());
+    auto config = profile::load_config(app::config_path());
     if (!config) {
         std::cout << "error: config " << config.error().message << "\n";
         return 1;
@@ -250,7 +197,7 @@ int cmd_profile_show(const std::string& id) {
 
 int cmd_profile_match(const std::string& game_text) {
     const auto game = parse_game_id(game_text);
-    auto config = profile::load_config(config_path());
+    auto config = profile::load_config(app::config_path());
     if (!config) {
         std::cout << "error: config " << config.error().message << "\n";
         return 1;
@@ -364,6 +311,35 @@ int cmd_recover() {
     return 0;
 }
 
+int run_one_click() {
+    auto config = profile::load_config(app::config_path());
+    if (!config) {
+        std::cerr << "error: config " << config.error().message << "\n";
+        return 1;
+    }
+    app::LaunchOptions options;
+    options.game = config->launcher.game;
+    options.profile = config->launcher.profile;
+    switch (config->launcher.region) {
+    case profile::LauncherRegion::Auto:
+        options.region = game::Region::Auto;
+        break;
+    case profile::LauncherRegion::Cn:
+        options.region = game::Region::Cn;
+        break;
+    case profile::LauncherRegion::Global:
+        options.region = game::Region::Global;
+        break;
+    }
+    auto outcome = app::run_launch(*config, options);
+    if (!outcome) {
+        std::cerr << "error: " << to_string(outcome.error().code) << " "
+                  << outcome.error().message << "\n";
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -379,6 +355,10 @@ int main() {
     }
     std::vector<std::wstring> wide_owned(wide_argv, wide_argv + wide_argc);
     LocalFree(wide_argv);
+
+    if (app::select_invocation_mode(wide_argc) == app::InvocationMode::OneClick) {
+        return run_one_click();
+    }
 
     std::vector<std::wstring> passthrough;
     std::vector<std::string> owned;
@@ -411,7 +391,7 @@ int main() {
     CLI::App app{"HoyoFlux " + std::string(kVersion) +
                  " - session launcher for HoYoverse PC games"};
     app.set_version_flag("--version", kVersion);
-    app.require_subcommand(0, 1);  // running without a subcommand shows help
+    app.require_subcommand(1, 1);
 
     bool verbose = false;
     int exit_code = 0;
@@ -458,7 +438,7 @@ int main() {
         ->required();
     profile_cmd->add_subcommand("path", "print the config file path")
         ->callback([] {
-            std::cout << config_path().string() << "\n";
+            std::cout << app::config_path().string() << "\n";
             return 0;
         });
     std::string match_game;

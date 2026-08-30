@@ -55,11 +55,21 @@
 
 namespace hoyoflux::profile {
 
+enum class LauncherRegion { Auto, Cn, Global };
+
+struct LauncherConfig {
+    GameId game{GameId::Genshin};
+    std::string profile{"auto"};
+    LauncherRegion region{LauncherRegion::Auto};
+    bool notifications{true};
+};
+
 struct Config {
     std::vector<Profile> profiles;
     std::string default_profile;  // legacy fallback
     std::string genshin_default;
     std::string starrail_default;
+    LauncherConfig launcher;
 };
 
 struct DisplayFacts {

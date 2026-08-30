@@ -258,6 +258,12 @@ std::string default_config_toml() {
 schema = 1
 default_profile = "desktop"
 
+[launcher]
+game = "genshin"
+profile = "auto"
+region = "auto"
+notifications = true
+
 [defaults]
 genshin = "desktop"
 starrail = "starrail_desktop"
@@ -356,6 +362,40 @@ Result<Config> parse_config(std::string_view toml_text) {
                 return std::unexpected(profile.error());
             }
             config.profiles.push_back(std::move(*profile));
+        }
+    }
+    if (const auto* launcher = root.get("launcher");
+        launcher && launcher->is_table()) {
+        const auto& table = *launcher->as_table();
+        if (const auto game = opt_string(table, "game")) {
+            if (*game == "genshin") {
+                config.launcher.game = GameId::Genshin;
+            } else if (*game == "starrail") {
+                config.launcher.game = GameId::StarRail;
+            } else {
+                return std::unexpected(Error::make(
+                    ErrorCode::ConfigParseFailed,
+                    "launcher.game must be \"genshin\" or \"starrail\""));
+            }
+        }
+        if (const auto profile = opt_string(table, "profile")) {
+            config.launcher.profile = *profile;
+        }
+        if (const auto region = opt_string(table, "region")) {
+            if (*region == "auto") {
+                config.launcher.region = LauncherRegion::Auto;
+            } else if (*region == "cn") {
+                config.launcher.region = LauncherRegion::Cn;
+            } else if (*region == "global") {
+                config.launcher.region = LauncherRegion::Global;
+            } else {
+                return std::unexpected(Error::make(
+                    ErrorCode::ConfigParseFailed,
+                    "launcher.region must be auto|cn|global"));
+            }
+        }
+        if (const auto notifications = opt_bool(table, "notifications")) {
+            config.launcher.notifications = *notifications;
         }
     }
     if (const auto* default_profile = root.get("default_profile");

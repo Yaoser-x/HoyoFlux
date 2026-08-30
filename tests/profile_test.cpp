@@ -19,6 +19,10 @@ TEST_CASE("default config parses into the built-in presets",
     REQUIRE(config->profiles.size() == 4);
     CHECK(config->genshin_default == "desktop");
     CHECK(config->starrail_default == "starrail_desktop");
+    CHECK(config->launcher.game == GameId::Genshin);
+    CHECK(config->launcher.profile == "auto");
+    CHECK(config->launcher.region == profile::LauncherRegion::Auto);
+    CHECK(config->launcher.notifications);
 
     auto desktop = profile::find_profile(*config, "desktop");
     REQUIRE(desktop.has_value());
@@ -46,6 +50,25 @@ TEST_CASE("default config parses into the built-in presets",
     auto starrail = profile::find_profile(*config, "starrail_desktop");
     REQUIRE(starrail.has_value());
     CHECK(starrail->game == GameId::StarRail);
+}
+
+TEST_CASE("launcher config is optional, typed and validated",
+          "[profile][launcher][b1-8]") {
+    auto parsed = profile::parse_config(R"(
+[launcher]
+game = "starrail"
+profile = "starrail_desktop"
+region = "global"
+notifications = false
+)");
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->launcher.game == GameId::StarRail);
+    CHECK(parsed->launcher.profile == "starrail_desktop");
+    CHECK(parsed->launcher.region == profile::LauncherRegion::Global);
+    CHECK_FALSE(parsed->launcher.notifications);
+    auto invalid = profile::parse_config("[launcher]\nregion=\"mars\"\n");
+    REQUIRE_FALSE(invalid.has_value());
+    CHECK(invalid.error().code == ErrorCode::ConfigParseFailed);
 }
 
 TEST_CASE("every field maps into the typed profile", "[profile][config]") {
