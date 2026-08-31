@@ -16,12 +16,17 @@
 using namespace hoyoflux;
 namespace profile = hoyoflux::profile;
 
-TEST_CASE("default config parses into the built-in presets",
+TEST_CASE("default config parses into generic built-in profiles",
           "[profile][config]") {
-    auto config = profile::parse_config(profile::default_config_toml());
+    const auto document = profile::default_config_toml();
+    CHECK(document.find("ipad") == std::string::npos);
+    CHECK(document.find("xiaomi") == std::string::npos);
+
+    auto config = profile::parse_config(document);
     REQUIRE(config.has_value());
-    REQUIRE(config->profiles.size() == 4);
-    CHECK(config->preset_revision == 3);
+    REQUIRE(config->profiles.size() == 2);
+    CHECK(config->preset_revision == 4);
+    CHECK(config->default_profile.empty());
     CHECK(config->genshin_default == "desktop");
     CHECK(config->starrail_default == "starrail_desktop");
     CHECK(config->launcher.game == GameId::Genshin);
@@ -37,32 +42,48 @@ TEST_CASE("default config parses into the built-in presets",
     CHECK(desktop->render.persistence == ResolutionPersistence::Session);
     CHECK_FALSE(desktop->ui.dpi_scale.has_value());
 
-    auto ipad = profile::find_profile(*config, "ipad");
-    REQUIRE(ipad.has_value());
-    CHECK(ipad->ui.mobile_ui);
-    REQUIRE(ipad->ui.dpi_scale.has_value());
-    CHECK(*ipad->ui.dpi_scale == 2.0f);
-    REQUIRE(ipad->render.resolution.has_value());
-    CHECK(ipad->render.resolution->width == 2266);
-    CHECK(ipad->render.resolution->height == 1488);
-    CHECK(ipad->runtime.fps == 60);
-    REQUIRE(ipad->match.resolution.has_value());
-    CHECK(ipad->match.resolution->width == 2266);
-    CHECK(ipad->match.resolution->height == 1488);
-    CHECK_FALSE(ipad->match.portrait.has_value());
-    CHECK(ipad->match.auto_select);  // legacy "match = auto" string form
-
-    auto xiaomi = profile::find_profile(*config, "xiaomi");
-    REQUIRE(xiaomi.has_value());
-    CHECK(xiaomi->match.auto_select);
-    CHECK(xiaomi->match.resolution == std::optional<Resolution>{{2656, 1220}});
-    CHECK(xiaomi->match.priority == 100);
-    CHECK(xiaomi->render.resolution == std::optional<Resolution>{{2656, 1220}});
-    CHECK(xiaomi->runtime.fps == 120);
+    CHECK_FALSE(profile::find_profile(*config, "ipad").has_value());
+    CHECK_FALSE(profile::find_profile(*config, "xiaomi").has_value());
 
     auto starrail = profile::find_profile(*config, "starrail_desktop");
     REQUIRE(starrail.has_value());
     CHECK(starrail->game == GameId::StarRail);
+}
+
+TEST_CASE("generic mobile example profile parses",
+          "[profile][config][privacy]") {
+    auto config = profile::parse_config(R"(
+schema = 1
+preset_revision = 4
+
+[profiles.example_mobile]
+game = "genshin"
+
+[profiles.example_mobile.match]
+auto_select = true
+resolution = "1920x1080"
+priority = 100
+
+[profiles.example_mobile.render]
+resolution = "1920x1080"
+persistence = "session"
+
+[profiles.example_mobile.runtime]
+fps = 60
+
+[profiles.example_mobile.ui]
+mobile_ui = true
+dpi_scale = 2.0
+)");
+    REQUIRE(config.has_value());
+    auto mobile = profile::find_profile(*config, "example_mobile");
+    REQUIRE(mobile.has_value());
+    CHECK(mobile->match.auto_select);
+    CHECK(mobile->match.resolution == std::optional<Resolution>{{1920, 1080}});
+    CHECK(mobile->render.resolution == std::optional<Resolution>{{1920, 1080}});
+    CHECK(mobile->runtime.fps == 60);
+    CHECK(mobile->ui.mobile_ui);
+    CHECK(mobile->ui.dpi_scale == std::optional<float>{2.0f});
 }
 
 TEST_CASE("launcher config is optional, typed and validated",
@@ -239,9 +260,28 @@ TEST_CASE("missing profile id reports not found", "[profile][config]") {
     CHECK(missing.error().code == ErrorCode::ProfileNotFound);
 }
 
-TEST_CASE("auto matching picks iPad mini profile for its exact mode",
+TEST_CASE("auto matching picks a custom mobile profile for its exact mode",
           "[profile][matcher]") {
-    auto config = profile::parse_config(profile::default_config_toml());
+    auto config = profile::parse_config(R"(
+[defaults]
+genshin = "desktop"
+starrail = "starrail_desktop"
+
+[profiles.desktop]
+game = "genshin"
+
+[profiles.example_mobile]
+game = "genshin"
+[profiles.example_mobile.match]
+auto_select = true
+resolution = "1920x1080"
+priority = 100
+[profiles.example_mobile.ui]
+mobile_ui = true
+
+[profiles.starrail_desktop]
+game = "starrail"
+)");
     REQUIRE(config.has_value());
 
     win32::DisplayInfo landscape;
@@ -251,26 +291,26 @@ TEST_CASE("auto matching picks iPad mini profile for its exact mode",
     landscape.right = 2560;
     landscape.bottom = 1440;
 
-    win32::DisplayInfo ipad_mini;
-    ipad_mini.is_attached = true;
-    ipad_mini.left = 2560;
-    ipad_mini.top = 0;
-    ipad_mini.right = 4826;
-    ipad_mini.bottom = 1488;  // 2266x1488 landscape mode
+    win32::DisplayInfo mobile_display;
+    mobile_display.is_attached = true;
+    mobile_display.left = 2560;
+    mobile_display.top = 0;
+    mobile_display.right = 4480;
+    mobile_display.bottom = 1080;  // 1920x1080 example mode
 
     auto desktop = profile::match_auto_profile(*config, GameId::Genshin, {landscape});
     REQUIRE(desktop.has_value());
     CHECK(desktop->id == "desktop");
 
     auto mobile = profile::match_auto_profile(
-        *config, GameId::Genshin, {landscape, ipad_mini});
+        *config, GameId::Genshin, {landscape, mobile_display});
     REQUIRE(mobile.has_value());
-    CHECK(mobile->id == "ipad");
+    CHECK(mobile->id == "example_mobile");
     CHECK(mobile->ui.mobile_ui);
 
     // Star Rail has its own deterministic fallback.
     auto starrail =
-        profile::match_auto_profile(*config, GameId::StarRail, {ipad_mini});
+        profile::match_auto_profile(*config, GameId::StarRail, {mobile_display});
     REQUIRE(starrail.has_value());
     CHECK(starrail->id == "starrail_desktop");
 }
@@ -537,7 +577,7 @@ resolution = "1920x1080"
 
     auto migrated = profile::load_config(path);
     REQUIRE(migrated.has_value());
-    CHECK(migrated->preset_revision == 3);
+    CHECK(migrated->preset_revision == 4);
     CHECK(migrated->launcher.game == GameId::Genshin);
     CHECK(migrated->launcher.profile == "auto");
     CHECK(migrated->genshin_default == "desktop");
@@ -573,7 +613,7 @@ resolution = "1920x1080"
         migrated_contents << migrated_file.rdbuf();
         persisted = migrated_contents.str();
     }
-    CHECK(persisted.find("preset_revision = 3") != std::string::npos);
+    CHECK(persisted.find("preset_revision = 4") != std::string::npos);
 
     auto second_load = profile::load_config(path);
     REQUIRE(second_load.has_value());
@@ -651,7 +691,7 @@ priority = 7
 
     auto migrated = profile::load_config(path);
     REQUIRE(migrated.has_value());
-    CHECK(migrated->preset_revision == 3);
+    CHECK(migrated->preset_revision == 4);
     CHECK(migrated->launcher.game == GameId::StarRail);
     CHECK(migrated->launcher.profile == "starrail_desktop");
     CHECK(migrated->launcher.region == profile::LauncherRegion::Global);
@@ -669,7 +709,7 @@ priority = 7
     std::filesystem::remove_all(dir);
 }
 
-TEST_CASE("revision two built-in xiaomi preset migrates to revision three",
+TEST_CASE("revision two built-in xiaomi preset migrates to revision four",
           "[profile][migration][b1-r0]") {
     const auto dir = std::filesystem::temp_directory_path() /
                      ("hoyoflux_migration_xiaomi_" +
@@ -701,7 +741,7 @@ dpi_scale = 2.75
 
     auto migrated = profile::load_config(path);
     REQUIRE(migrated.has_value());
-    CHECK(migrated->preset_revision == 3);
+    CHECK(migrated->preset_revision == 4);
     auto xiaomi = profile::find_profile(*migrated, "xiaomi");
     REQUIRE(xiaomi.has_value());
     CHECK(xiaomi->match.auto_select);
@@ -718,6 +758,101 @@ dpi_scale = 2.75
         std::ostringstream backup_contents;
         backup_contents << backup_file.rdbuf();
         CHECK(backup_contents.str() == legacy);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("revision three migration preserves all existing profiles",
+          "[profile][migration][privacy]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hoyoflux_migration_v3_" +
+                      std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "config.toml";
+    const std::string legacy = R"(
+preset_revision = 3
+
+[profiles.ipad]
+game = "genshin"
+[profiles.ipad.match]
+auto_select = true
+resolution = "1234x567"
+priority = 7
+[profiles.ipad.render]
+resolution = "1234x567"
+persistence = "persistent"
+[profiles.ipad.ui]
+mobile_ui = true
+dpi_scale = 1.75
+
+[profiles.xiaomi]
+game = "genshin"
+[profiles.xiaomi.match]
+auto_select = false
+portrait = true
+[profiles.xiaomi.runtime]
+fps = 75
+
+[profiles.any_name]
+game = "starrail"
+[profiles.any_name.runtime]
+fps = 144
+)";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << legacy;
+    }
+
+    auto migrated = profile::load_config(path);
+    REQUIRE(migrated.has_value());
+    CHECK(migrated->preset_revision == 4);
+
+    auto ipad = profile::find_profile(*migrated, "ipad");
+    REQUIRE(ipad.has_value());
+    CHECK(ipad->match.resolution == std::optional<Resolution>{{1234, 567}});
+    CHECK(ipad->match.priority == 7);
+    CHECK(ipad->render.persistence == ResolutionPersistence::Persistent);
+    CHECK(ipad->ui.dpi_scale == std::optional<float>{1.75f});
+
+    auto xiaomi = profile::find_profile(*migrated, "xiaomi");
+    REQUIRE(xiaomi.has_value());
+    CHECK_FALSE(xiaomi->match.auto_select);
+    CHECK(xiaomi->match.portrait == std::optional<bool>{true});
+    CHECK(xiaomi->runtime.fps == 75);
+    auto arbitrary = profile::find_profile(*migrated, "any_name");
+    REQUIRE(arbitrary.has_value());
+    CHECK(arbitrary->game == GameId::StarRail);
+    CHECK(arbitrary->runtime.fps == 144);
+
+    const auto backup_path = dir / "config.toml.bak.v3";
+    REQUIRE(std::filesystem::exists(backup_path));
+    {
+        std::ifstream backup_file(backup_path, std::ios::binary);
+        std::ostringstream backup_contents;
+        backup_contents << backup_file.rdbuf();
+        CHECK(backup_contents.str() == legacy);
+    }
+
+    std::string persisted;
+    {
+        std::ifstream migrated_file(path, std::ios::binary);
+        std::ostringstream migrated_contents;
+        migrated_contents << migrated_file.rdbuf();
+        persisted = migrated_contents.str();
+    }
+    CHECK(persisted.find("preset_revision = 4") != std::string::npos);
+    CHECK(persisted.find("1234x567") != std::string::npos);
+    CHECK(persisted.find("dpi_scale = 1.75") != std::string::npos);
+
+    auto second_load = profile::load_config(path);
+    REQUIRE(second_load.has_value());
+    {
+        std::ifstream second_file(path, std::ios::binary);
+        std::ostringstream second_contents;
+        second_contents << second_file.rdbuf();
+        CHECK(second_contents.str() == persisted);
     }
 
     std::filesystem::remove_all(dir);
@@ -759,7 +894,7 @@ dpi_scale = 2.0
 
     auto migrated = profile::load_config(path);
     REQUIRE(migrated.has_value());
-    CHECK(migrated->preset_revision == 3);
+    CHECK(migrated->preset_revision == 4);
     auto xiaomi = profile::find_profile(*migrated, "xiaomi");
     REQUIRE(xiaomi.has_value());
     CHECK(xiaomi->match.resolution == std::optional<Resolution>{{1234, 567}});

@@ -6,8 +6,8 @@
 //
 // Schema (all fields optional; missing values keep the defaults below):
 //
-//   default_profile = "desktop"
-//   preset_revision = 3       # built-in preset evolution, not data schema
+//   default_profile = "desktop"  # legacy fallback; fresh configs use [defaults]
+//   preset_revision = 4       # built-in preset evolution, not data schema
 //
 //   [profiles.desktop.render]
 //   resolution = "2560x1440"     # "WxH"; absent = leave as-is
@@ -34,7 +34,7 @@
 // `match = "manual" | "auto"` (optional, default manual). The structured
 // form declares what a profile is for (F8):
 //
-//   [profiles.ipad.match]
+//   [profiles.example_mobile.match]
 //   auto_select = true
 //   portrait = true              # or device_name / resolution / aspect_ratio
 //   priority = 0                 # tie-break among equally specific matches
@@ -107,7 +107,7 @@ struct AutoProfileDecision {
 Result<Config> parse_config(std::string_view toml_text);
 
 // Load %LOCALAPPDATA%\HoyoFlux\config.toml. A missing file yields the
-// default document (desktop/ipad/xiaomi presets); a broken one is an error
+// default document (desktop/starrail_desktop profiles); a broken one is an error
 // the user must fix (`hoyoflux doctor` shows it).
 Result<Config> load_config(const std::filesystem::path& path);
 

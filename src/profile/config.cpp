@@ -17,7 +17,7 @@
 namespace hoyoflux::profile {
 namespace {
 
-constexpr int kCurrentPresetRevision = 3;
+constexpr int kCurrentPresetRevision = 4;
 
 Profile make_profile_template(std::string id, GameId game) {
     Profile profile;
@@ -673,7 +673,7 @@ Result<Config> parse_config_root(const toml::table& root) {
                 ErrorCode::ConfigParseFailed,
                 "unsupported preset revision " +
                     std::to_string(static_cast<long long>(value)) +
-                    " (this build understands revisions 1-3); update HoyoFlux"));
+                    " (this build understands revisions 1-4); update HoyoFlux"));
         }
         config.preset_revision = static_cast<int>(value);
     }
@@ -748,8 +748,7 @@ Result<Config> parse_config_root(const toml::table& root) {
 std::string default_config_toml() {
     return R"(# HoyoFlux configuration. See `hoyoflux profile list` for the parsed view.
 schema = 1
-preset_revision = 3
-default_profile = "desktop"
+preset_revision = 4
 
 [launcher]
 game = "genshin"
@@ -777,44 +776,6 @@ fps = 30
 
 [profiles.desktop.ui]
 mobile_ui = false
-
-[profiles.ipad]
-game = "genshin"
-
-[profiles.ipad.match]
-auto_select = true
-resolution = "2266x1488"
-priority = 100
-
-[profiles.ipad.render]
-resolution = "2266x1488"
-persistence = "session"
-
-[profiles.ipad.runtime]
-fps = 60
-
-[profiles.ipad.ui]
-mobile_ui = true
-dpi_scale = 2.0
-
-[profiles.xiaomi]
-game = "genshin"
-
-[profiles.xiaomi.match]
-auto_select = true
-resolution = "2656x1220"
-priority = 100
-
-[profiles.xiaomi.render]
-resolution = "2656x1220"
-persistence = "session"
-
-[profiles.xiaomi.runtime]
-fps = 120
-
-[profiles.xiaomi.ui]
-mobile_ui = true
-dpi_scale = 2.75
 
 [profiles.starrail_desktop]
 game = "starrail"
@@ -896,6 +857,9 @@ Result<Config> load_config(const std::filesystem::path& path) {
     if (source_revision < 3) {
         migrate_legacy_xiaomi(root);
     }
+    // v3 -> v4 intentionally changes only the built-in fresh document. Any
+    // profile already present in a user's config, including legacy ids such
+    // as "ipad" or "xiaomi", is user-owned data and must be preserved.
     root.insert_or_assign("preset_revision", kCurrentPresetRevision);
 
     auto backup = create_migration_backup(path, source_revision);

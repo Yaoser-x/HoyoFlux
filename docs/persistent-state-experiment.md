@@ -18,7 +18,7 @@ hoyoflux state-dump starrail
 ## 实验步骤（每个游戏、每种安装区域：国服／国际服）
 
 1. **Dump A（桌面基线）。** 通过官方 HoYoPlay 启动游戏，在游戏内设置已知桌面分辨率，退出后执行 `hoyoflux state-dump <game> > dump-A.txt`。
-2. **污染运行。** 通过 HoyoFlux 使用 iPad／移动端配置档启动，游玩或进入主菜单后退出。
+2. **污染运行。** 通过 HoyoFlux 使用移动端配置档启动，游玩或进入主菜单后退出。
 3. **Dump B。** 执行 `hoyoflux state-dump <game> > dump-B.txt`。
 4. **比较。** 执行 `git diff --no-index dump-A.txt dump-B.txt`。每一处变化都是游戏改写的值。F2/F3 门要求所有变化都属于已输出根键下的 `Screenmanager*` 值，否则说明适配器的根键列表不完整。
 5. **恢复检查。** 执行 `hoyoflux recover`（或等待后续任一会话正常结束）后再次输出；所有变化值都必须恢复为 Dump A。

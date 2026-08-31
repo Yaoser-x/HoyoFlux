@@ -9,14 +9,14 @@ HoyoFlux 是对经典原神／崩坏：星穹铁道 FPS 解锁工具的独立重
 ```text
 hoyoflux.exe                                      # 无界面 Auto 一键启动原神
 hoyoflux-cli.cmd launch genshin --profile desktop  # PowerShell 同步 CLI
-hoyoflux-cli.cmd launch genshin --profile ipad
+hoyoflux-cli.cmd launch genshin --profile my_mobile
 hoyoflux-cli.cmd launch starrail --profile auto -- -popupwindow   # -- 后为透传参数
 hoyoflux-cli.cmd doctor        # 只读环境与能力报告
 hoyoflux-cli.cmd profile match genshin   # 解释显示器匹配与 fallback
 hoyoflux-cli.cmd state-dump genshin
 ```
 
-无参数双击 `HoyoFlux.exe` 会按 `[launcher]` 读取本次显示环境，优先选择明确命中的移动设备 Profile；没有命中时使用 `[defaults].genshin`（内置为 `desktop`）。Auto 每次重新判断，不保存上次选择。iPad mini 7 的内置匹配条件是 Windows 当前显示模式 `2266x1488`；Xiaomi 的内置 Auto 条件是 `2656x1220`，渲染分辨率为 `2656x1220`、运行帧率为 `120 FPS`。
+无参数双击 `HoyoFlux.exe` 会按 `[launcher]` 读取本次显示环境，优先选择用户定义且明确命中的 Profile；没有命中时使用 `[defaults].genshin`（内置为 `desktop`）。Auto 每次重新判断，不保存上次选择。Profile 可以按 `resolution`、`aspect_ratio`、`portrait`、`device_name` 和 `priority` 定义匹配条件；其中 `resolution` 指远程设备在 Windows 中实际呈现的显示模式，不是设备原生屏幕分辨率。
 
 生产 EXE 保持 `asInvoker`。无参数 One-click 和 `launch` 在确实需要时自动请求 UAC，并同步等待提升后的子进程；`doctor`、`profile`、`version`、`state-dump` 等只读命令不会因未管理员运行而失败。UAC 取消时 One-click 安静退出，CLI 输出 `elevation cancelled` 并返回非零码。
 
