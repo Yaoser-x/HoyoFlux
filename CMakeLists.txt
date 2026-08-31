@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 project(HoyoFlux VERSION 1.0.0 LANGUAGES CXX)
 
 # Version single source (plan §1): CMake generates version.hpp; code reads
-# HOYOFLUX_VERSION_STRING from it. Never declare the tree a final release
-# while HOYOFLUX_PRERELEASE is set.
-set(HOYOFLUX_PRERELEASE "beta.1")
+# HOYOFLUX_VERSION_STRING from it. A non-empty prerelease value marks a
+# prerelease build; the 1.0.0 release build is stable.
+set(HOYOFLUX_PRERELEASE "")
 if(HOYOFLUX_PRERELEASE)
   set(HOYOFLUX_VERSION_SUFFIX "-${HOYOFLUX_PRERELEASE}")
 else()

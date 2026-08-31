@@ -1,4 +1,4 @@
-# 兼容性矩阵：旧工具与 HoyoFlux（计划 F15）
+# 兼容性矩阵：HoyoFlux 1.0.0
 
 旧工具仍是行为基准。本表逐项记录 HoyoFlux 已对齐的行为，以及有意做出的改进。“已验证”要求通过真实游戏门（B1）；自动化测试只能证明机制，不能代替游戏内结果。
 
@@ -30,7 +30,7 @@
 
 ## 验证状态
 
-- 自动化：Debug 与 Release preset 均已完成构建；本轮新增审计回归通过。完整
-  CTest 仍需在允许当前用户写入 HKCU 的 Windows 环境执行。
+- 自动化：Debug 与 Release preset 均已完成构建；Debug 与 Release 的完整
+  CTest 均为 11/11 通过（Windows HKCU 可写环境）。
 - 原神 Mobile UI：B1 正常会话、功能门与崩溃恢复均通过；telemetry 偏移修复通过逐字段有效地址测试，修复后真机复测按计划跳过。
 - 省电模式、FPS 热键和持久状态守护的 B1 真机回归均已通过；分辨率配置档、星穹铁道 Mobile UI 以及持久状态 Tests A–D 的剩余专项门仍按各自状态推进。持久状态 A/B 步骤见 [persistent-state-experiment.md](persistent-state-experiment.md)。
