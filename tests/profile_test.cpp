@@ -11,6 +11,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 using namespace hoyoflux;
 namespace profile = hoyoflux::profile;
@@ -129,6 +130,65 @@ dpi_scale = 1.25
     CHECK(profile.runtime.power_save_fps == 45);
     REQUIRE(profile.ui.dpi_scale.has_value());
     CHECK(*profile.ui.dpi_scale == 1.25f);
+}
+
+TEST_CASE("known TOML fields with wrong types are rejected",
+          "[profile][config][types]") {
+    const std::vector<std::string> documents = {
+        R"([profiles.bad]
+game = "genshin"
+[profiles.bad.runtime]
+fps = "60"
+                                  )",
+        R"([profiles.bad]
+game = "genshin"
+[profiles.bad.ui]
+mobile_ui = "true"
+                                  )",
+        R"([profiles.bad]
+game = "genshin"
+[profiles.bad.render]
+resolution = 2266
+                                  )",
+        R"([launcher]
+notifications = "false"
+                                  )",
+        R"([profiles.bad]
+game = "genshin"
+[profiles.bad.ui]
+dpi_scale = "2.0"
+                                  )",
+        R"([profiles.bad]
+game = "genshin"
+[profiles.bad.runtime]
+priority = true
+                                  )",
+        R"([profiles.bad]
+game = "genshin"
+[profiles.bad.match]
+device_name = 123
+                                  )",
+    };
+    for (const auto& document : documents) {
+        auto parsed = profile::parse_config(document);
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK((parsed.error().code == ErrorCode::ProfileInvalid ||
+               parsed.error().code == ErrorCode::ConfigParseFailed));
+    }
+}
+
+TEST_CASE("match device names use a real UTF-8 to UTF-16 conversion",
+          "[profile][config][utf8]") {
+    auto parsed = profile::parse_config(R"(
+[profiles.display]
+game = "genshin"
+[profiles.display.match]
+device_name = "显示器"
+)");
+    REQUIRE(parsed.has_value());
+    auto found = profile::find_profile(*parsed, "display");
+    REQUIRE(found.has_value());
+    CHECK(found->match.device_name == std::optional<std::wstring>{L"显示器"});
 }
 
 TEST_CASE("unknown keys are ignored, malformed values are reported",

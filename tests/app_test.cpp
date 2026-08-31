@@ -30,3 +30,33 @@ TEST_CASE("shared launch resolver preserves explicit profile overrides",
     CHECK(*resolved->profile.ui.dpi_scale == 1.5f);
     CHECK_FALSE(resolved->auto_decision.has_value());
 }
+
+TEST_CASE("CLI override ranges are rejected before session setup",
+          "[app][config]") {
+    auto config = profile::parse_config(profile::default_config_toml());
+    REQUIRE(config.has_value());
+    app::LaunchOptions options;
+    options.game = GameId::Genshin;
+    options.profile = "desktop";
+
+    options.fps_override = 0;
+    auto bad_fps_low = app::resolve_launch(*config, options);
+    REQUIRE_FALSE(bad_fps_low.has_value());
+    CHECK(bad_fps_low.error().code == ErrorCode::InvalidArgument);
+
+    options.fps_override = 5001;
+    auto bad_fps_high = app::resolve_launch(*config, options);
+    REQUIRE_FALSE(bad_fps_high.has_value());
+    CHECK(bad_fps_high.error().code == ErrorCode::InvalidArgument);
+
+    options.fps_override.reset();
+    options.dpi_override = 0.0f;
+    auto bad_dpi_low = app::resolve_launch(*config, options);
+    REQUIRE_FALSE(bad_dpi_low.has_value());
+    CHECK(bad_dpi_low.error().code == ErrorCode::InvalidArgument);
+
+    options.dpi_override = 10.0f;
+    auto bad_dpi_high = app::resolve_launch(*config, options);
+    REQUIRE_FALSE(bad_dpi_high.has_value());
+    CHECK(bad_dpi_high.error().code == ErrorCode::InvalidArgument);
+}

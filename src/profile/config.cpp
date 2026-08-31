@@ -1,9 +1,13 @@
 #include "profile/config.hpp"
 
+#include "platform/win32/text.hpp"
+
 #include <toml++/toml.hpp>
 
 #include <fstream>
+#include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -52,6 +56,93 @@ std::optional<std::string> opt_string(const toml::table& table, std::string_view
     return std::nullopt;
 }
 
+template <typename Predicate>
+Result<void> validate_field_type(const toml::table& table,
+                                 std::string_view key, Predicate&& predicate,
+                                 std::string_view expected,
+                                 std::string_view context,
+                                 ErrorCode error_code = ErrorCode::ProfileInvalid) {
+    const auto* node = table.get(key);
+    if (node != nullptr && !predicate(*node)) {
+        return std::unexpected(Error::make(
+            error_code, std::string(context) + ": " + std::string(key) +
+                            " must be " + std::string(expected)));
+    }
+    return {};
+}
+
+Result<void> validate_profile_types(const toml::table& body,
+                                    std::string_view context) {
+    const auto is_string = [](const toml::node& node) { return node.is_string(); };
+    const auto is_bool = [](const toml::node& node) { return node.is_boolean(); };
+    const auto is_integer = [](const toml::node& node) { return node.is_integer(); };
+    const auto is_number = [](const toml::node& node) {
+        return node.is_integer() || node.is_floating_point();
+    };
+    const auto is_table = [](const toml::node& node) { return node.is_table(); };
+    const auto check = [&](const toml::table& table, std::string_view key,
+                           auto&& predicate, std::string_view expected) {
+        return validate_field_type(table, key, std::forward<decltype(predicate)>(predicate),
+                                   expected, context);
+    };
+    if (auto result = check(body, "game", is_string, "a string"); !result) {
+        return result;
+    }
+    if (auto result = validate_field_type(body, "match",
+                                          [&](const toml::node& node) {
+                                              return node.is_string() || node.is_table();
+                                          },
+                                          "a string or table", context);
+        !result) {
+        return result;
+    }
+    if (auto result = check(body, "render", is_table, "a table"); !result) {
+        return result;
+    }
+    if (auto result = check(body, "runtime", is_table, "a table"); !result) {
+        return result;
+    }
+    if (auto result = check(body, "ui", is_table, "a table"); !result) {
+        return result;
+    }
+
+    if (const auto* match = body.get("match"); match && match->is_table()) {
+        const auto& table = *match->as_table();
+        if (auto result = check(table, "auto_select", is_bool, "a boolean"); !result) return result;
+        if (auto result = check(table, "device_name", is_string, "a string"); !result) return result;
+        if (auto result = check(table, "resolution", is_string, "a string"); !result) return result;
+        if (auto result = check(table, "aspect_ratio", is_number, "a number"); !result) return result;
+        if (auto result = check(table, "portrait", is_bool, "a boolean"); !result) return result;
+        if (auto result = check(table, "priority", is_integer, "an integer"); !result) return result;
+    }
+    if (const auto* render = body.get("render"); render && render->is_table()) {
+        const auto& table = *render->as_table();
+        if (auto result = check(table, "resolution", is_string, "a string"); !result) return result;
+        if (auto result = check(table, "fullscreen", is_string, "a string"); !result) return result;
+        if (auto result = check(table, "persistence", is_string, "a string"); !result) return result;
+        if (auto result = check(table, "monitor", is_integer, "an integer"); !result) return result;
+    }
+    if (const auto* runtime = body.get("runtime"); runtime && runtime->is_table()) {
+        const auto& table = *runtime->as_table();
+        if (auto result = check(table, "fps", is_integer, "an integer"); !result) return result;
+        if (auto result = check(table, "priority", is_string, "a string"); !result) return result;
+        if (auto result = check(table, "hotkeys", is_bool, "a boolean"); !result) return result;
+        if (auto result = check(table, "power_save", is_table, "a table"); !result) return result;
+        if (const auto* power_save = table.get("power_save");
+            power_save && power_save->is_table()) {
+            const auto& ps = *power_save->as_table();
+            if (auto result = check(ps, "enabled", is_bool, "a boolean"); !result) return result;
+            if (auto result = check(ps, "fps", is_integer, "an integer"); !result) return result;
+        }
+    }
+    if (const auto* ui = body.get("ui"); ui && ui->is_table()) {
+        const auto& table = *ui->as_table();
+        if (auto result = check(table, "mobile_ui", is_bool, "a boolean"); !result) return result;
+        if (auto result = check(table, "dpi_scale", is_number, "a number"); !result) return result;
+    }
+    return {};
+}
+
 // std::from_chars throughout: a malformed value is a reported error, never
 // an escaping std::invalid_argument (plan 18.1).
 Result<Resolution> parse_resolution(std::string_view text,
@@ -84,6 +175,10 @@ Result<Resolution> parse_resolution(std::string_view text,
 
 Result<Profile> parse_profile(std::string id, const toml::table& body) {
     const std::string context = "profile '" + id + "'";
+
+    if (auto valid_types = validate_profile_types(body, context); !valid_types) {
+        return std::unexpected(valid_types.error());
+    }
 
     Profile profile = make_profile_template(std::move(id), GameId::Genshin);
 
@@ -122,8 +217,13 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
             profile.match.auto_select = *auto_select;
         }
         if (const auto device = opt_string(table, "device_name")) {
-            profile.match.device_name =
-                std::wstring(device->begin(), device->end());
+            auto device_name = win32::utf16(*device);
+            if (!device_name) {
+                return std::unexpected(Error::make(
+                    ErrorCode::ProfileInvalid,
+                    context + ": match.device_name is not valid UTF-8"));
+            }
+            profile.match.device_name = std::move(*device_name);
         }
         if (const auto resolution = opt_string(table, "resolution")) {
             auto parsed = parse_resolution(*resolution, context + " match");
@@ -133,7 +233,7 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
             profile.match.resolution = *parsed;
         }
         if (const auto aspect = opt_double(table, "aspect_ratio")) {
-            if (*aspect <= 0.0 || *aspect > 10.0) {
+            if (!std::isfinite(*aspect) || *aspect <= 0.0 || *aspect > 10.0) {
                 return std::unexpected(Error::make(
                     ErrorCode::ProfileInvalid,
                     context + ": match.aspect_ratio must be within (0, 10]"));
@@ -144,6 +244,12 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
             profile.match.portrait = *portrait;
         }
         if (const auto priority = opt_int(table, "priority")) {
+            if (*priority < std::numeric_limits<int>::min() ||
+                *priority > std::numeric_limits<int>::max()) {
+                return std::unexpected(Error::make(
+                    ErrorCode::ProfileInvalid,
+                    context + ": match.priority is outside the int range"));
+            }
             profile.match.priority = static_cast<int>(*priority);
         }
     }
@@ -245,7 +351,7 @@ Result<Profile> parse_profile(std::string id, const toml::table& body) {
             profile.ui.mobile_ui = *mobile;
         }
         if (const auto dpi = opt_double(table, "dpi_scale")) {
-            if (*dpi < 0.25 || *dpi > 4.0) {
+            if (!std::isfinite(*dpi) || *dpi < 0.25 || *dpi > 4.0) {
                 return std::unexpected(Error::make(
                     ErrorCode::ProfileInvalid,
                     context + ": dpi_scale must be within [0.25, 4.0]"));
@@ -501,6 +607,46 @@ Result<void> write_migrated_document(const std::filesystem::path& path,
 
 Result<Config> parse_config_root(const toml::table& root) {
     Config config;
+    const auto is_integer = [](const toml::node& node) { return node.is_integer(); };
+    const auto is_string = [](const toml::node& node) { return node.is_string(); };
+    const auto is_table = [](const toml::node& node) { return node.is_table(); };
+    const auto is_bool = [](const toml::node& node) { return node.is_boolean(); };
+    const auto check = [&](const toml::table& table, std::string_view key,
+                           auto&& predicate, std::string_view expected) {
+        return validate_field_type(table, key,
+                                   std::forward<decltype(predicate)>(predicate),
+                                   expected, "config", ErrorCode::ConfigParseFailed);
+    };
+    if (auto result = check(root, "schema", is_integer, "an integer"); !result) {
+        return std::unexpected(result.error());
+    }
+    if (auto result = check(root, "preset_revision", is_integer, "an integer"); !result) {
+        return std::unexpected(result.error());
+    }
+    if (auto result = check(root, "profiles", is_table, "a table"); !result) {
+        return std::unexpected(result.error());
+    }
+    if (auto result = check(root, "launcher", is_table, "a table"); !result) {
+        return std::unexpected(result.error());
+    }
+    if (auto result = check(root, "default_profile", is_string, "a string"); !result) {
+        return std::unexpected(result.error());
+    }
+    if (auto result = check(root, "defaults", is_table, "a table"); !result) {
+        return std::unexpected(result.error());
+    }
+    if (const auto* launcher = root.get("launcher"); launcher && launcher->is_table()) {
+        const auto& table = *launcher->as_table();
+        if (auto result = check(table, "game", is_string, "a string"); !result) return std::unexpected(result.error());
+        if (auto result = check(table, "profile", is_string, "a string"); !result) return std::unexpected(result.error());
+        if (auto result = check(table, "region", is_string, "a string"); !result) return std::unexpected(result.error());
+        if (auto result = check(table, "notifications", is_bool, "a boolean"); !result) return std::unexpected(result.error());
+    }
+    if (const auto* defaults = root.get("defaults"); defaults && defaults->is_table()) {
+        const auto& table = *defaults->as_table();
+        if (auto result = check(table, "genshin", is_string, "a string"); !result) return std::unexpected(result.error());
+        if (auto result = check(table, "starrail", is_string, "a string"); !result) return std::unexpected(result.error());
+    }
     // Forward-compatibility key (plan 18.4): absent = schema 1. A future
     // schema bumps this and migrates old files on load.
     if (const auto schema = root.get("schema");
