@@ -13,6 +13,7 @@
 #include "domain/session.hpp"
 #include "platform/win32/display.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -47,6 +48,10 @@ struct ActiveSessionJournal {
 [[nodiscard]] std::filesystem::path journal_path();
 
 Result<void> save_journal(const ActiveSessionJournal& journal);
+
+// Test-only seam for deterministic journal durability failure tests. A value
+// of N makes the Nth save call fail and resets the call counter.
+void set_journal_save_failure_for_testing(std::optional<size_t> fail_on_save);
 // std::nullopt when no journal exists; a JournalCorrupt error when one does
 // but cannot be parsed (kept on disk for diagnosis, never auto-deleted).
 Result<std::optional<ActiveSessionJournal>> load_journal();

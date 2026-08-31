@@ -7,10 +7,32 @@
 #include <windows.h>
 
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace hoyoflux::win32 {
+
+inline std::optional<std::wstring> utf16(std::string_view utf8_text) {
+    if (utf8_text.empty()) {
+        return std::wstring{};
+    }
+    if (utf8_text.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+    }
+    const int length = static_cast<int>(utf8_text.size());
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                         utf8_text.data(), length, nullptr, 0);
+    if (size <= 0) {
+        return std::nullopt;
+    }
+    std::wstring result(static_cast<size_t>(size), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_text.data(),
+                            length, result.data(), size) <= 0) {
+        return std::nullopt;
+    }
+    return result;
+}
 
 inline std::string utf8(std::wstring_view wide) {
     if (wide.empty()) {

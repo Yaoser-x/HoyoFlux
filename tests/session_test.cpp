@@ -22,6 +22,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_assertion_result.hpp>
@@ -216,6 +217,63 @@ TEST_CASE("schema 1 journals still parse (physical displays only)",
     REQUIRE(session::clear_journal().has_value());
 }
 
+TEST_CASE("schema 2 rejects incomplete and semantically invalid journals",
+          "[session][journal][corrupt]") {
+    const auto write = [](std::string_view text) {
+        std::ofstream out(session::journal_path(),
+                          std::ios::binary | std::ios::trunc);
+        out << text;
+    };
+    const std::string minimal =
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false}})";
+    const std::vector<std::string> invalid = {
+        R"({"schema":2})",
+        R"({"schema":2,"session_id":"s","game":"genshin","stage":"idle","rollback":{"required":false}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"rollback":{"required":false}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle"})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":-1,"stage":"idle","rollback":{"required":false}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":4294967296,"stage":"idle","rollback":{"required":false}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":1.5,"stage":"idle","rollback":{"required":false}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"persistent_state":{"sets":[{"root":"r","settings":[{"name":"n","type":1,"data":"not*base64"}]}]}}})",
+    };
+    for (const auto& text : invalid) {
+        write(text);
+        auto loaded = session::load_journal();
+        REQUIRE_FALSE(loaded.has_value());
+        CHECK(loaded.error().code == ErrorCode::JournalCorrupt);
+    }
+    write(minimal);
+    auto valid = session::load_journal();
+    REQUIRE(valid.has_value());
+    REQUIRE(valid->has_value());
+    CHECK((*valid)->schema == 2);
+    CHECK((*valid)->pid == 0);
+    REQUIRE(session::clear_journal().has_value());
+}
+
+TEST_CASE("session lease serializes launch and recovery and is released by RAII",
+          "[session][lease]") {
+    {
+        auto first = session::SessionLease::acquire();
+        REQUIRE(first.has_value());
+        std::optional<Error> second_error;
+        std::thread contender([&] {
+            auto second = session::SessionLease::acquire();
+            if (second.has_value()) {
+                second_error = Error::make(
+                    ErrorCode::None, "contender unexpectedly acquired the lease");
+            } else {
+                second_error = second.error();
+            }
+        });
+        contender.join();
+        REQUIRE(second_error.has_value());
+        CHECK(second_error->code == ErrorCode::SessionAlreadyActive);
+    }
+    auto after_release = session::SessionLease::acquire();
+    REQUIRE(after_release.has_value());
+}
+
 TEST_CASE("corrupt journal is reported, not silently ignored", "[session][journal]") {
     session::ActiveSessionJournal journal;
     journal.pid = 1;
@@ -293,6 +351,31 @@ TEST_CASE("full session lifecycle with main-module-only requirements",
     CHECK_FALSE(context->id.empty());
 
     // Clean completion leaves no journal behind.
+    auto journal = session::load_journal();
+    REQUIRE(journal.has_value());
+    CHECK_FALSE(journal->has_value());
+}
+
+TEST_CASE("PID journal commit failure terminates the suspended child before it runs",
+          "[session][engine][journal]") {
+    REQUIRE(session::clear_journal().has_value());
+    const auto marker = std::filesystem::temp_directory_path() /
+                        (L"HoyoFlux-pid-commit-" +
+                         std::to_wstring(GetCurrentProcessId()) + L".txt");
+    std::error_code ec;
+    std::filesystem::remove(marker, ec);
+
+    StubAdapter adapter({game::ModuleRequirement{"", {".text"}, false}});
+    session::SessionEngine engine(adapter, fast_config());
+    auto request = make_request();
+    request.game_args = {L"/c", L"echo ran > \"" + marker.wstring() + L"\""};
+    session::set_journal_save_failure_for_testing(2);
+    auto result = engine.run(request);
+    session::set_journal_save_failure_for_testing(std::nullopt);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == ErrorCode::SessionFailed);
+    CHECK_FALSE(std::filesystem::exists(marker));
     auto journal = session::load_journal();
     REQUIRE(journal.has_value());
     CHECK_FALSE(journal->has_value());
