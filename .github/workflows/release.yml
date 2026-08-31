@@ -36,27 +36,96 @@ jobs:
       - name: Test (release)
         run: ctest --preset release
 
+      - name: Verify binary version matches tag
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME.Substring(1)
+          $reported = (& .\build\release\src\app\hoyoflux.exe version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "version command failed with exit code $LASTEXITCODE"
+          }
+          if ($reported -notmatch '^HoyoFlux\s+(.+)$') {
+            throw "unexpected version output: $reported"
+          }
+          $binaryVersion = $Matches[1]
+          if ($tagVersion -ne $binaryVersion) {
+            throw "tag version '$tagVersion' does not match binary version '$binaryVersion'"
+          }
+
       - name: Package
         shell: pwsh
         run: |
-          $version = git describe --tags --always
+          $version = $env:GITHUB_REF_NAME.Substring(1)
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item build/release/src/app/hoyoflux.exe "dist/hoyoflux-$version.exe"
           Copy-Item build/release/src/app/hoyoflux.exe dist/hoyoflux.exe
           Copy-Item src/app/hoyoflux-cli.cmd dist/
-          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md, docs/compatibility-matrix.md dist/
-          $hash = (Get-FileHash "dist/hoyoflux-$version.exe" -Algorithm SHA256).Hash
-          "$hash  hoyoflux-$version.exe" | Out-File -Encoding ascii "dist/SHA256SUMS.txt"
+          Copy-Item config.example.toml, README.md, LICENSE, THIRD_PARTY_NOTICES.md, docs/compatibility-matrix.md dist/
+
+          # llvm-mingw uses two non-system runtime DLLs for this executable.
+          # Keep them beside the EXE so the ZIP is runnable from an empty dir.
+          $toolchainBin = Split-Path (Get-Command clang.exe).Source
+          foreach ($runtime in @('libc++.dll', 'libunwind.dll')) {
+            $runtimePath = Join-Path $toolchainBin $runtime
+            if (-not (Test-Path $runtimePath)) {
+              throw "missing toolchain runtime '$runtimePath'"
+            }
+            Copy-Item $runtimePath (Join-Path dist $runtime)
+          }
+
+          $exeHash = (Get-FileHash "dist/hoyoflux-$version.exe" -Algorithm SHA256).Hash
+          "$exeHash  hoyoflux-$version.exe" | Out-File -Encoding ascii "dist/SHA256SUMS.txt"
+
+          $objdump = (Get-Command llvm-objdump.exe).Source
+          $imports = & $objdump -p "dist/hoyoflux-$version.exe" |
+            Select-String 'DLL Name:' |
+            ForEach-Object { ($_ -replace '^\s*DLL Name:\s*', '').Trim() }
+          $systemDlls = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($systemDll in @('kernel32.dll', 'user32.dll', 'shell32.dll', 'ole32.dll', 'advapi32.dll')) {
+            [void]$systemDlls.Add($systemDll)
+          }
+          foreach ($import in $imports) {
+            if ($systemDlls.Contains($import) -or $import.StartsWith('api-ms-win-', [StringComparison]::OrdinalIgnoreCase) -or $import.StartsWith('ext-ms-win-', [StringComparison]::OrdinalIgnoreCase)) {
+              continue
+            }
+            if (-not (Test-Path (Join-Path dist $import))) {
+              throw "non-system import '$import' is not packaged"
+            }
+          }
+
           Compress-Archive -Path dist/* -DestinationPath "dist/hoyoflux-$version-windows-x64.zip"
+          $zipHash = (Get-FileHash "dist/hoyoflux-$version-windows-x64.zip" -Algorithm SHA256).Hash
+          "$zipHash  hoyoflux-$version-windows-x64.zip" | Add-Content -Encoding ascii "dist/SHA256SUMS.txt"
+
+      - name: Clean-package smoke
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'hoyoflux-clean-package'
+          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          Expand-Archive -Path "dist/hoyoflux-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.zip" -DestinationPath $smoke
+          $env:HOYOFLUX_STATE_DIR = Join-Path $smoke 'state'
+          & (Join-Path $smoke 'hoyoflux-cli.cmd') version
+          if ($LASTEXITCODE -ne 0) { throw 'clean-package version smoke failed' }
+          & (Join-Path $smoke 'hoyoflux-cli.cmd') doctor
+          if ($LASTEXITCODE -ne 0) { throw 'clean-package doctor smoke failed' }
+          & (Join-Path $smoke 'hoyoflux-cli.cmd') profile match genshin
+          if ($LASTEXITCODE -ne 0) { throw 'clean-package profile match smoke failed' }
 
       - name: Publish release
         shell: pwsh
         run: |
-          $version = git describe --tags --always
-          gh release create "$env:GITHUB_REF_NAME" `
-            "dist/hoyoflux-$version-windows-x64.zip" `
-            "dist/SHA256SUMS.txt" `
-            --title "HoyoFlux $version" `
-            --generate-notes
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $releaseArgs = @(
+            'release', 'create', $env:GITHUB_REF_NAME,
+            "dist/hoyoflux-$version-windows-x64.zip",
+            "dist/SHA256SUMS.txt",
+            '--title', "HoyoFlux $version", '--generate-notes'
+          )
+          if ($version -match '-(?:alpha|beta|rc)(?:\.|$)') {
+            $releaseArgs += '--prerelease'
+          }
+          & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
         env:
           GH_TOKEN: ${{ github.token }}

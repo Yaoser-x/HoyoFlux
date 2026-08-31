@@ -1,0 +1,75 @@
+# HoyoFlux configuration. See `hoyoflux-cli.cmd profile list` for the parsed view.
+schema = 1
+preset_revision = 3
+default_profile = "desktop"
+
+[launcher]
+game = "genshin"
+profile = "auto"
+region = "auto"
+notifications = true
+
+[defaults]
+genshin = "desktop"
+starrail = "starrail_desktop"
+
+[profiles.desktop]
+game = "genshin"
+
+[profiles.desktop.render]
+persistence = "session"
+
+[profiles.desktop.runtime]
+fps = 120
+priority = "normal"
+
+[profiles.desktop.runtime.power_save]
+enabled = false
+fps = 30
+
+[profiles.desktop.ui]
+mobile_ui = false
+
+[profiles.ipad]
+game = "genshin"
+
+[profiles.ipad.match]
+auto_select = true
+resolution = "2266x1488"
+priority = 100
+
+[profiles.ipad.render]
+resolution = "2266x1488"
+persistence = "session"
+
+[profiles.ipad.runtime]
+fps = 60
+
+[profiles.ipad.ui]
+mobile_ui = true
+dpi_scale = 2.0
+
+[profiles.xiaomi]
+game = "genshin"
+
+[profiles.xiaomi.match]
+auto_select = true
+resolution = "2656x1220"
+priority = 100
+
+[profiles.xiaomi.render]
+resolution = "2656x1220"
+persistence = "session"
+
+[profiles.xiaomi.runtime]
+fps = 120
+
+[profiles.xiaomi.ui]
+mobile_ui = true
+dpi_scale = 2.75
+
+[profiles.starrail_desktop]
+game = "starrail"
+
+[profiles.starrail_desktop.runtime]
+fps = 120

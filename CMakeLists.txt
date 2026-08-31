@@ -4,7 +4,12 @@ project(HoyoFlux VERSION 1.0.0 LANGUAGES CXX)
 # Version single source (plan §1): CMake generates version.hpp; code reads
 # HOYOFLUX_VERSION_STRING from it. Never declare the tree a final release
 # while HOYOFLUX_PRERELEASE is set.
-set(HOYOFLUX_PRERELEASE "alpha.1")
+set(HOYOFLUX_PRERELEASE "beta.1")
+if(HOYOFLUX_PRERELEASE)
+  set(HOYOFLUX_VERSION_SUFFIX "-${HOYOFLUX_PRERELEASE}")
+else()
+  set(HOYOFLUX_VERSION_SUFFIX "")
+endif()
 configure_file(cmake/version.hpp.in ${CMAKE_BINARY_DIR}/generated/version.hpp
                @ONLY)
 

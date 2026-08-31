@@ -13,6 +13,7 @@
 | 星穹铁道 Mobile UI | 进程内 IL2CPP 调用 | code stub + 远程调用 | 机制对齐 | payload 仍受 B1 门控 |
 | 启动参数渲染 | `-screen-width/height` | 仅使用同一组已验证参数 | 对齐 | B1 待完成 |
 | 安装检测 | 启动器注册表遍历 | 启动器注册表遍历，并正确打开渠道子键 | 对齐并修错 | 注册表测试通过 |
+| Auto Profile 选择 | 按显示器条件选择配置 | 一次采集显示事实后按 specificity/priority 选择 | 对齐 | B1 已通过 |
 
 ## 有意的行为改进
 
@@ -29,6 +30,7 @@
 
 ## 验证状态
 
-- 自动化：Debug 与 Release preset 下 10 个测试程序全部通过。
+- 自动化：Debug 与 Release preset 均已完成构建；本轮新增审计回归通过。完整
+  CTest 仍需在允许当前用户写入 HKCU 的 Windows 环境执行。
 - 原神 Mobile UI：B1 正常会话、功能门与崩溃恢复均通过；telemetry 偏移修复通过逐字段有效地址测试，修复后真机复测按计划跳过。
-- 其余真机门：桌面／iPad／小米分辨率配置档、星穹铁道 Mobile UI、Alt-Tab 省电回归以及持久状态 Tests A–D 仍按各自状态推进。持久状态 A/B 步骤见 [persistent-state-experiment.md](persistent-state-experiment.md)。
+- 省电模式、FPS 热键和持久状态守护的 B1 真机回归均已通过；分辨率配置档、星穹铁道 Mobile UI 以及持久状态 Tests A–D 的剩余专项门仍按各自状态推进。持久状态 A/B 步骤见 [persistent-state-experiment.md](persistent-state-experiment.md)。
