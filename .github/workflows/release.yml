@@ -36,20 +36,21 @@ jobs:
       - name: Test (release)
         run: ctest --preset release
 
-      - name: Verify binary version matches tag
+      - name: Verify configured version matches tag
         shell: pwsh
         run: |
           $tagVersion = $env:GITHUB_REF_NAME.Substring(1)
-          $reported = (& .\build\release\src\app\hoyoflux.exe version | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0) {
-            throw "version command failed with exit code $LASTEXITCODE"
+          $versionHeader = Get-Content .\build\release\generated\version.hpp -Raw
+          $match = [regex]::Match(
+            $versionHeader,
+            '(?m)^#define HOYOFLUX_VERSION_STRING "([^"]*)"\s*$'
+          )
+          if (-not $match.Success) {
+            throw 'generated version header does not contain HOYOFLUX_VERSION_STRING'
           }
-          if ($reported -notmatch '^HoyoFlux\s+(.+)$') {
-            throw "unexpected version output: $reported"
-          }
-          $binaryVersion = $Matches[1]
-          if ($tagVersion -ne $binaryVersion) {
-            throw "tag version '$tagVersion' does not match binary version '$binaryVersion'"
+          $configuredVersion = $match.Groups[1].Value
+          if ($tagVersion -ne $configuredVersion) {
+            throw "tag version '$tagVersion' does not match configured version '$configuredVersion'"
           }
 
       - name: Package
