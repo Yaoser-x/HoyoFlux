@@ -24,8 +24,10 @@ enum class ErrorCode {
     // platform / win32
     OsError,               // a Win32 call failed; see Error::os_code
     NotElevated,
+    ElevationCancelled,    // the user declined a runas consent prompt
     ProcessSpawnFailed,
     ProcessNotFound,
+    SessionAlreadyActive,
     RegistryReadFailed,
 
     // pe / snapshot
@@ -45,6 +47,7 @@ enum class ErrorCode {
     // session / config
     SessionFailed,
     ProfileNotFound,
+    AutoProfileAmbiguous,
     ProfileInvalid,
     ConfigParseFailed,
     JournalCorrupt,
@@ -72,8 +75,10 @@ using Result = std::expected<T, Error>;
     case NotSupported: return "not-supported";
     case OsError: return "os-error";
     case NotElevated: return "not-elevated";
+    case ElevationCancelled: return "elevation-cancelled";
     case ProcessSpawnFailed: return "process-spawn-failed";
     case ProcessNotFound: return "process-not-found";
+    case SessionAlreadyActive: return "session-already-active";
     case RegistryReadFailed: return "registry-read-failed";
     case InvalidPe: return "invalid-pe";
     case SectionNotFound: return "section-not-found";
@@ -85,6 +90,7 @@ using Result = std::expected<T, Error>;
     case RemoteWriteFailed: return "remote-write-failed";
     case SessionFailed: return "session-failed";
     case ProfileNotFound: return "profile-not-found";
+    case AutoProfileAmbiguous: return "auto-profile-ambiguous";
     case ProfileInvalid: return "profile-invalid";
     case ConfigParseFailed: return "config-parse-failed";
     case JournalCorrupt: return "journal-corrupt";

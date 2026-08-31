@@ -3,6 +3,27 @@
 /build-*/
 out/
 
+# Local HoyoFlux configuration
+/config.toml
+/config.local.toml
+*.local.toml
+
+# Runtime state
+/state/
+/logs/
+active-session.json
+
+# Diagnostics
+dump-*.txt
+*.log
+*.dmp
+*.trace
+
+# Local validation artifacts
+/b1-evidence/
+/evidence/
+/dist-local/
+
 # CMake
 CMakeCache.txt
 CMakeFiles/

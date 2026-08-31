@@ -1,0 +1,58 @@
+# HoyoFlux configuration. See `hoyoflux-cli.cmd profile list` for the parsed view.
+# The mobile profile below is an example only; it does not describe a built-in
+# or author device. Replace its values with your Windows display mode and UI
+# preference.
+schema = 1
+preset_revision = 4
+
+[launcher]
+game = "genshin"
+profile = "auto"
+region = "auto"
+notifications = true
+
+[defaults]
+genshin = "desktop"
+starrail = "starrail_desktop"
+
+[profiles.desktop]
+game = "genshin"
+
+[profiles.desktop.render]
+persistence = "session"
+
+[profiles.desktop.runtime]
+fps = 120
+priority = "normal"
+
+[profiles.desktop.runtime.power_save]
+enabled = false
+fps = 30
+
+[profiles.desktop.ui]
+mobile_ui = false
+
+[profiles.example_mobile]
+game = "genshin"
+
+[profiles.example_mobile.match]
+auto_select = true
+resolution = "1920x1080"
+priority = 100
+
+[profiles.example_mobile.render]
+resolution = "1920x1080"
+persistence = "session"
+
+[profiles.example_mobile.runtime]
+fps = 60
+
+[profiles.example_mobile.ui]
+mobile_ui = true
+dpi_scale = 2.0
+
+[profiles.starrail_desktop]
+game = "starrail"
+
+[profiles.starrail_desktop.runtime]
+fps = 120

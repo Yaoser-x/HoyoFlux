@@ -42,7 +42,13 @@ enum class PowerSavePolicy { Disabled, Enabled };
 
 struct RenderPolicy {
     std::optional<Resolution> resolution;
-    FullscreenMode fullscreen{FullscreenMode::Borderless};
+
+    // Absent = do not pass -screen-fullscreen at all; the game keeps its own
+    // current mode. Only modes a game adapter can express as verified launch
+    // arguments may be set (borderless is not one of them - see the
+    // adapters' capability reports).
+    std::optional<FullscreenMode> fullscreen;
+
     ResolutionPersistence persistence{ResolutionPersistence::Session};
     std::optional<uint32_t> monitor;  // display index; 0 = primary
 };
@@ -52,6 +58,9 @@ struct RuntimePolicy {
     PowerSavePolicy power_save{PowerSavePolicy::Disabled};
     uint32_t power_save_fps{30};
     ProcessPriority priority{ProcessPriority::Normal};
+    // F7: END toggles the fps control on/off, Ctrl+Up/Down step the fps.
+    // Off = no hotkey thread exists at all.
+    bool hotkeys{false};
 };
 
 struct UiPolicy {
@@ -59,8 +68,19 @@ struct UiPolicy {
     std::optional<float> dpi_scale;  // 1.0 == 100%; absent == leave game default
 };
 
-// How a profile is selected when the user asks for `--profile auto`.
-enum class MatchPolicy { Manual, Auto };
+// How a profile is selected when the user asks for `--profile auto` (F8).
+// A profile declares WHAT it is for; the matcher walks the displays and
+// picks by identity before geometry. A profile with auto_select=false is
+// never chosen automatically - only an explicit --profile can select it.
+struct MatchPolicy {
+    bool auto_select{false};
+
+    std::optional<std::wstring> device_name;   // exact monitor identity
+    std::optional<Resolution> resolution;      // exact current resolution
+    std::optional<float> aspect_ratio;         // e.g. 0.5625 (9:16 portrait)
+    std::optional<bool> portrait;              // orientation
+    int priority{0};  // higher wins among equally specific candidates
+};
 
 using ProfileId = std::string;
 
@@ -70,7 +90,7 @@ struct Profile {
     RenderPolicy render;
     UiPolicy ui;
     RuntimePolicy runtime;
-    MatchPolicy match{MatchPolicy::Manual};
+    MatchPolicy match{};  // auto_select=false: manual by default
 };
 
 }  // namespace hoyoflux

@@ -27,6 +27,8 @@ struct SessionContext {
     SessionId id;
     GameId game{GameId::Genshin};
     uint32_t pid{0};
+    uint32_t process_exit_code{0};
+    uint64_t game_runtime_ms{0};
     SessionStage stage{SessionStage::Idle};
     bool rollback_required{false};
 };

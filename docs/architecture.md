@@ -1,12 +1,10 @@
-# HoyoFlux architecture
+# HoyoFlux 架构
 
-## Layer / dependency graph
+## 分层与依赖图
 
-Dependencies point strictly downward. A lower layer never references a higher
-one; the compiler enforces this because every layer is a separate CMake
-target.
+依赖严格向下：底层不得引用上层。每层均为独立 CMake target，由编译器强制执行边界。
 
-```
+```text
         domain
         ^   ^
         |   |
@@ -28,44 +26,35 @@ platform   scan
   cli
 ```
 
-| Layer       | Directory       | Responsibility                                        |
-| ----------- | --------------- | ----------------------------------------------------- |
-| domain      | src/domain      | Pure data model (Profile, LaunchRequest, Error, …). No I/O. |
-| platform    | src/platform/win32 | Win32 boundary: process spawn, registry, PE, display, privilege. |
-| scan        | src/scan        | Pattern scanner + compiled patterns + module snapshot. |
-| patch       | src/patch       | Patch engine, remote memory, remote state.            |
-| game        | src/game        | Game knowledge: adapters + per-game signatures.       |
-| session     | src/session     | Session engine, journal, display guard, rollback.     |
-| app         | src/app         | Command dispatch, validation, wiring.                 |
-| frontend    | src/frontend    | CLI / tray.                                            |
+| 层 | 目录 | 职责 |
+| --- | --- | --- |
+| domain | `src/domain` | 纯数据模型（Profile、LaunchRequest、Error 等），无 I/O。 |
+| platform | `src/platform/win32` | Win32 边界：进程创建、注册表、PE、显示器、权限。 |
+| scan | `src/scan` | 特征扫描、已编译 pattern 与模块快照。 |
+| patch | `src/patch` | 补丁引擎、远程内存与远程状态。 |
+| game | `src/game` | 游戏知识：适配器与各游戏签名。 |
+| session | `src/session` | 会话引擎、Journal、显示守护与回滚。 |
+| app | `src/app` | One-click／CLI 分流、LaunchService 组装与命令分发。 |
+| frontend | Win32 Shell／CLI | 无主窗口通知与父控制台输出。 |
 
-## Design decisions
+## 设计决策
 
-- **Plain Win32, no syscall layer.** The legacy project routed everything
-  through a private NTSYSAPI syscall shim for anti-analysis reasons. HoyoFlux
-  uses ordinary Win32 (`CreateProcessW`, `ReadProcessMemory`, …) and makes no
-  attempt at anti-cheat evasion.
-- **Self-contained remote state.** The legacy shellcode read the unlocker's
-  `FpsValue` across process boundaries, forcing the launcher to stay resident.
-  HoyoFlux allocates a `RemoteState` block inside the game; fixed profiles are
-  fully non-resident after patch+resume.
-- **Session-scoped display config.** Persistent game settings are snapshotted,
-  guarded while the session runs, and restored on exit — the launcher's config
-  is never polluted.
-- **GameAdapter produces PatchPlan, PatchEngine executes.** Game knowledge is
-  decoupled from memory writes.
-- **TOML profiles parsed once.** Config never enters the hot path.
-- **UTF-8 sources.** The legacy project stored sources as UTF-16LE; everything
-  here is UTF-8.
+- **使用标准 Win32，不引入 syscall 层。** 旧项目出于反分析目的通过私有 NTSYSAPI syscall shim 调用系统功能；HoyoFlux 使用普通 Win32 API（`CreateProcessW`、`ReadProcessMemory` 等），不尝试规避反作弊。
+- **自包含远程状态。** 旧 shellcode 跨进程读取解锁器的 `FpsValue`，导致启动器必须常驻。HoyoFlux 在游戏内分配 `RemoteState`；固定配置档在 patch + resume 后不依赖常驻启动器。
+- **会话级显示配置。** 启动前快照游戏持久设置，运行时守护，退出后恢复，不污染官方启动器配置。
+- **GameAdapter 生成 PatchPlan，PatchEngine 负责执行。** 游戏知识与内存写入解耦。
+- **TOML 配置只解析一次。** 配置解析不进入热路径。
+- **统一 UTF-8。** 旧项目使用 UTF-16LE 源文件，本项目全部采用 UTF-8。
+- **Auto 是无状态决策。** 显示事实只采集一次，匹配按 `(specificity, priority)` 排序；同秩候选报错，无匹配时使用 per-game fallback，不保存上次 Profile。
+- **单一启动路径。** One-click 与 CLI 都先经 `LaunchService` 解析 Profile 和覆盖项，再调用未经侵入修改的 `SessionEngine`。需要启动的入口在解析配置前通过 `ShellExecuteExW(runas)` 按需提权，父进程等待 elevated child 并原样传播退出码；只读命令不提权。通知是 best-effort，不参与会话成败；轻量 Win32 worker 为每次通知持有临时图标约 6 秒，再由同一线程发送 `NIM_DELETE`，不会让托盘图标贯穿整个 Session。启动通知直接进入 Session，成功/错误终态通过有上限的 drain 等待当前通知后再退出。生产 `HoyoFlux.exe` 保持 Windows subsystem；随包的 `hoyoflux-cli.cmd` 通过 `start /wait` 提供 PowerShell 的同步 CLI 调用，不增加第二个 EXE，也不影响无参数 One-click 静默启动。
 
-## Session lifecycle
+## 会话生命周期
 
-```
+```text
 Idle -> Preparing -> Launching -> Resolving -> Patching -> Running
                                                               |
                                                               v
                                       Restoring -> Completed
 ```
 
-Any stage failing routes `Failed -> Rollback -> Completed`. The SessionEngine
-is the only module allowed to restore state, kill the game, or exit.
+任一阶段失败都会进入 `Failed -> Rollback -> Completed`。只有 SessionEngine 可以恢复状态、终止游戏或退出。
