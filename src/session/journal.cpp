@@ -668,6 +668,10 @@ Result<PersistentDisplayState> parse_persistent_state(const JsonValue& node) {
         return std::unexpected(Error::make(
             ErrorCode::JournalCorrupt, "persistent_state.sets must be an array"));
     }
+    if ((*sets_member)->items.empty()) {
+        return std::unexpected(Error::make(
+            ErrorCode::JournalCorrupt, "persistent_state.sets must not be empty"));
+    }
     PersistentDisplayState state;
     for (const auto& set_item : (*sets_member)->items) {
         if (set_item.kind != JsonValue::Kind::Object) {
@@ -688,6 +692,11 @@ Result<PersistentDisplayState> parse_persistent_state(const JsonValue& node) {
         if ((*settings)->kind != JsonValue::Kind::Array) {
             return std::unexpected(Error::make(
                 ErrorCode::JournalCorrupt, "persistent_state.settings must be an array"));
+        }
+        if ((*settings)->items.empty()) {
+            return std::unexpected(Error::make(
+                ErrorCode::JournalCorrupt,
+                "persistent_state.settings must not be empty"));
         }
         auto wide_root = win32::utf16((*root)->text);
         if (!wide_root) {
@@ -943,26 +952,26 @@ Result<std::optional<ActiveSessionJournal>> load_journal() {
         journal.stage = *parsed_stage;
         journal.rollback.required = *required;
 
-        if (const auto* displays = find_member(rollback, "physical_displays")) {
-            if (displays->kind != JsonValue::Kind::Array) {
-                return std::unexpected(Error::make(
-                    ErrorCode::JournalCorrupt,
-                    "rollback.physical_displays must be an array"));
-            }
-            for (const auto& item : displays->items) {
-                auto display = parse_display(item);
-                if (!display) return std::unexpected(display.error());
-                journal.rollback.displays.push_back(std::move(*display));
-            }
+        auto displays_member = required_member(rollback, "physical_displays");
+        auto persistent_member = required_member(rollback, "persistent_state");
+        if (!displays_member) return std::unexpected(displays_member.error());
+        if (!persistent_member) return std::unexpected(persistent_member.error());
+        if ((*displays_member)->kind != JsonValue::Kind::Array) {
+            return std::unexpected(Error::make(
+                ErrorCode::JournalCorrupt,
+                "rollback.physical_displays must be an array"));
         }
-        if (const auto* persistent = find_member(rollback, "persistent_state")) {
-            if (persistent->kind == JsonValue::Kind::Null) {
-                journal.rollback.persistent_state.reset();
-            } else {
-                auto state = parse_persistent_state(*persistent);
-                if (!state) return std::unexpected(state.error());
-                journal.rollback.persistent_state = std::move(*state);
-            }
+        for (const auto& item : (*displays_member)->items) {
+            auto display = parse_display(item);
+            if (!display) return std::unexpected(display.error());
+            journal.rollback.displays.push_back(std::move(*display));
+        }
+        if ((*persistent_member)->kind == JsonValue::Kind::Null) {
+            journal.rollback.persistent_state.reset();
+        } else {
+            auto state = parse_persistent_state(**persistent_member);
+            if (!state) return std::unexpected(state.error());
+            journal.rollback.persistent_state = std::move(*state);
         }
     } else {
         if (auto id = member_string(members, "session_id")) {

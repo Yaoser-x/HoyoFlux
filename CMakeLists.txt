@@ -37,7 +37,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   # uses __COUNTER__ which triggers -Wc2y-extensions under -Wpedantic.
   add_compile_options(-Wall -Wextra)
 elseif(MSVC)
-  add_compile_options(/W4 /permissive- /Zc:__cplusplus)
+  add_compile_options(
+    /W4
+    /permissive-
+    /Zc:__cplusplus
+    /utf-8
+  )
 endif()
 
 # ---------------------------------------------------------------------------

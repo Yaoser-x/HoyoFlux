@@ -225,15 +225,21 @@ TEST_CASE("schema 2 rejects incomplete and semantically invalid journals",
         out << text;
     };
     const std::string minimal =
-        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false}})";
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":[],"persistent_state":null}})";
     const std::vector<std::string> invalid = {
         R"({"schema":2})",
         R"({"schema":2,"session_id":"s","game":"genshin","stage":"idle","rollback":{"required":false}})",
         R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"rollback":{"required":false}})",
         R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle"})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"persistent_state":null}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":[]}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":{},"persistent_state":null}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":[],"persistent_state":[]}})",
         R"({"schema":2,"session_id":"s","game":"genshin","pid":-1,"stage":"idle","rollback":{"required":false}})",
         R"({"schema":2,"session_id":"s","game":"genshin","pid":4294967296,"stage":"idle","rollback":{"required":false}})",
         R"({"schema":2,"session_id":"s","game":"genshin","pid":1.5,"stage":"idle","rollback":{"required":false}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":[],"persistent_state":{"sets":[]}}})",
+        R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":[],"persistent_state":{"sets":[{"root":"r","settings":[]}]}}})",
         R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"persistent_state":{"sets":[{"root":"r","settings":[{"name":"n","type":1,"data":"not*base64"}]}]}}})",
     };
     for (const auto& text : invalid) {

@@ -31,7 +31,8 @@ Result<uintptr_t> allocate_remote_state(const win32::UniqueHandle& process,
     if (auto wrote = write_protected(process, *base,
                                      {raw.data(), raw.size()});
         !wrote) {
-        free_remote(process, *base);  // best effort; report the write error
+        // best effort; preserve the original write failure
+        (void)free_remote(process, *base);
         return std::unexpected(wrote.error());
     }
     return base;
