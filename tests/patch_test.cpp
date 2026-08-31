@@ -88,6 +88,25 @@ TEST_CASE("write_protected works on a read-only page and restores it", "[patch][
     CHECK(back == payload);
 }
 
+TEST_CASE("protection restore failure is a patch failure", "[patch][memory]") {
+    const auto process = self_process();
+    static const std::array<std::byte, 16> kReadOnly{std::byte{0x5A}};
+    const uintptr_t address = reinterpret_cast<uintptr_t>(kReadOnly.data());
+    const std::array<std::byte, 1> payload{std::byte{0xCD}};
+
+    patch::set_write_protected_restore_failure_for_testing(true);
+    auto result = patch::write_protected(process, address, payload);
+    patch::set_write_protected_restore_failure_for_testing(false);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == ErrorCode::PatchFailed);
+    CHECK(result.error().os_code == ERROR_ACCESS_DENIED);
+    MEMORY_BASIC_INFORMATION protection{};
+    REQUIRE(VirtualQuery(reinterpret_cast<LPCVOID>(address), &protection,
+                          sizeof(protection)) == sizeof(protection));
+    CHECK((protection.Protect & 0xFF) == PAGE_READONLY);
+}
+
 TEST_CASE("allocate_near returns a page below the anchor", "[patch][memory]") {
     const auto process = self_process();
     const uintptr_t anchor = reinterpret_cast<uintptr_t>(&self_process);

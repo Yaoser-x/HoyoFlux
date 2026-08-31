@@ -194,7 +194,30 @@ Result<void> terminate_and_wait(const UniqueHandle& process, uint32_t timeout_ms
         return std::unexpected(
             win32_error(ErrorCode::OsError, "TerminateProcess failed"));
     }
-    WaitForSingleObject(process.get(), timeout_ms);
+    const DWORD wait = WaitForSingleObject(process.get(), timeout_ms);
+    if (wait == WAIT_OBJECT_0) {
+        return {};
+    }
+    if (wait == WAIT_TIMEOUT) {
+        return std::unexpected(Error::make(
+            ErrorCode::OsError,
+            "TerminateProcess succeeded but the process did not exit before "
+            "the timeout",
+            ERROR_TIMEOUT));
+    }
+    return std::unexpected(
+        win32_error(ErrorCode::OsError, "WaitForSingleObject after TerminateProcess failed"));
+}
+
+Result<void> resume_thread(const UniqueHandle& thread) {
+    if (!thread) {
+        return std::unexpected(
+            Error::make(ErrorCode::InvalidArgument, "resume_thread: no thread"));
+    }
+    if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
+        return std::unexpected(win32_error(ErrorCode::OsError,
+                                           "ResumeThread failed"));
+    }
     return {};
 }
 

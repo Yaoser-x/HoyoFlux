@@ -66,6 +66,11 @@ bool is_process_running(DWORD pid);
 // Terminate and wait up to `timeout_ms` for it to exit.
 Result<void> terminate_and_wait(const UniqueHandle& process, uint32_t timeout_ms);
 
+// Resume the initially suspended process thread and report the documented
+// ResumeThread failure sentinel instead of allowing the caller to wait on a
+// thread that never started.
+Result<void> resume_thread(const UniqueHandle& thread);
+
 // Suspend / resume every thread of the process (Toolhelp thread snapshot +
 // SuspendThread / ResumeThread). Balanced pairs only: resuming decrements
 // each thread's suspend count once.

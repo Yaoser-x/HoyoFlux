@@ -4,11 +4,15 @@
 #include <minwinbase.h>
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <string>
+#include <utility>
 
 namespace hoyoflux::patch {
 namespace {
+
+std::atomic_bool g_inject_restore_failure{false};
 
 constexpr size_t kPageSize = 0x1000;
 constexpr uintptr_t kMaxNearWalk = 0x7FFF8000;  // legacy main.cpp:1519
@@ -82,20 +86,44 @@ Result<void> write_protected(const win32::UniqueHandle& process, uintptr_t addre
     const bool wrote = WriteProcessMemory(
         process.get(), reinterpret_cast<LPVOID>(address), data.data(), data.size(),
         &written);
+    const DWORD write_error = wrote ? ERROR_SUCCESS : GetLastError();
 
     if (need_unprotect) {
-        DWORD ignored = 0;
-        VirtualProtectEx(process.get(), reinterpret_cast<LPVOID>(address),
-                         data.size(), original_protect, &ignored);
+        DWORD restored_old_protect = 0;
+        BOOL restored = VirtualProtectEx(
+            process.get(), reinterpret_cast<LPVOID>(address), data.size(),
+            original_protect, &restored_old_protect);
+        if (g_inject_restore_failure.load() && restored) {
+            // The page has been restored before the seam reports failure, so
+            // a failing test cannot leave the current process page writable.
+            SetLastError(ERROR_ACCESS_DENIED);
+            restored = FALSE;
+        }
+        if (!restored) {
+            const DWORD restore_error = GetLastError();
+            std::string message =
+                "VirtualProtectEx restore failed for " + std::to_string(address);
+            if (!wrote || written != data.size()) {
+                message += "; WriteProcessMemory also failed at " +
+                           std::to_string(address);
+            }
+            return std::unexpected(Error::make(ErrorCode::PatchFailed,
+                                               std::move(message),
+                                               restore_error));
+        }
     }
     if (!wrote || written != data.size()) {
         return std::unexpected(Error::make(
             ErrorCode::RemoteWriteFailed,
             "WriteProcessMemory failed at " + std::to_string(address) + " (" +
                 std::to_string(data.size()) + " bytes)",
-            GetLastError()));
+            write_error));
     }
     return {};
+}
+
+void set_write_protected_restore_failure_for_testing(bool enabled) noexcept {
+    g_inject_restore_failure.store(enabled);
 }
 
 namespace {

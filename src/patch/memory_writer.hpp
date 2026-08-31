@@ -25,6 +25,10 @@ Result<void> read_bytes(const win32::UniqueHandle& process, uintptr_t address,
 Result<void> write_protected(const win32::UniqueHandle& process, uintptr_t address,
                              std::span<const std::byte> data);
 
+// Test-only seam for verifying that a failed protection restore is reported
+// as PatchFailed and never treated as a successful write.
+void set_write_protected_restore_failure_for_testing(bool enabled) noexcept;
+
 // Allocate `size` bytes (rounded up to a page) below `near_address`, walking
 // down in page steps like the legacy basefps allocator
 // (main.cpp:1517-1523). Returns the remote base address.

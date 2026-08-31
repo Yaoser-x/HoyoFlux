@@ -309,8 +309,16 @@ Result<AppliedPatch> apply_patch_plan(const win32::UniqueHandle& process,
         auto record = apply_one(process, op, applied.runtime, applied.stubs);
         if (!record) {
             // rollback_patch_plan also releases the RemoteState block.
-            rollback_patch_plan(process, applied);
-            return std::unexpected(record.error());
+            Error failure = record.error();
+            if (auto rolled_back = rollback_patch_plan(process, applied);
+                !rolled_back) {
+                failure.message += "; rollback failed: " +
+                                   rolled_back.error().message;
+                if (failure.os_code == 0) {
+                    failure.os_code = rolled_back.error().os_code;
+                }
+            }
+            return std::unexpected(std::move(failure));
         }
         applied.operations.push_back(std::move(*record));
     }

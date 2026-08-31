@@ -212,6 +212,17 @@ TEST_CASE("liveness checks", "[win32][process]") {
     CHECK_FALSE(w32::is_process_running(0xFFFFFFF0));  // bogus pid
 }
 
+TEST_CASE("process lifecycle helpers reject invalid handles", "[win32][process]") {
+    w32::UniqueHandle invalid;
+    auto terminated = w32::terminate_and_wait(invalid, 100);
+    REQUIRE_FALSE(terminated.has_value());
+    CHECK(terminated.error().code == ErrorCode::InvalidArgument);
+
+    auto resumed = w32::resume_thread(invalid);
+    REQUIRE_FALSE(resumed.has_value());
+    CHECK(resumed.error().code == ErrorCode::InvalidArgument);
+}
+
 TEST_CASE("launcher paths read without failing", "[win32][registry]") {
     // Machines without HoYoverse games installed must still succeed (empty).
     auto paths = w32::read_launcher_paths();
