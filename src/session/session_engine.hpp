@@ -20,12 +20,36 @@
 
 #include "domain/error.hpp"
 #include "domain/launch_request.hpp"
+#include "platform/win32/unique_handle.hpp"
 #include "domain/session.hpp"
 #include "game/game_adapter.hpp"
 
 #include <cstdint>
 
 namespace hoyoflux::session {
+
+// One named mutex serializes all recovery and launch work for the current
+// Windows user. The kernel releases ownership if the launcher process dies.
+class SessionLease {
+public:
+    static Result<SessionLease> acquire();
+
+    SessionLease() = default;
+    ~SessionLease();
+    SessionLease(const SessionLease&) = delete;
+    SessionLease& operator=(const SessionLease&) = delete;
+    SessionLease(SessionLease&& other) noexcept;
+    SessionLease& operator=(SessionLease&& other) noexcept;
+
+    [[nodiscard]] bool owns() const noexcept { return owns_; }
+
+private:
+    explicit SessionLease(win32::UniqueHandle mutex) noexcept
+        : mutex_(std::move(mutex)), owns_(true) {}
+
+    win32::UniqueHandle mutex_;
+    bool owns_{false};
+};
 
 enum class RecoveryAction {
     None,              // no journal present
@@ -53,6 +77,12 @@ public:
 
     // Runs the full non-resident session and blocks until the game exits.
     Result<SessionContext> run(const LaunchRequest& request);
+    Result<SessionContext> run(const LaunchRequest& request,
+                               SessionLease& lease);
+    // The caller must hold the lease and have completed preflight. This is
+    // used by LaunchService so One-click can notify only after preflight PASS.
+    Result<SessionContext> run_after_preflight(const LaunchRequest& request,
+                                               SessionLease& lease);
 
     // Called on every launcher start: if a journal from a previous crash
     // exists and its game process is gone, performs the recorded rollback
@@ -60,6 +90,8 @@ public:
     // only then clears the journal (plan §10.3). A live game process is
     // never touched.
     Result<RecoveryAction> recover();
+    Result<RecoveryAction> recover(SessionLease& lease);
+    Result<void> preflight(SessionLease& lease);
 
 private:
     game::GameAdapter& adapter_;

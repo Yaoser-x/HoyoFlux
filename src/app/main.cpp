@@ -496,12 +496,16 @@ int run_one_click() {
                                 widen(resolved.error().message));
         return 1;
     }
-    if (config->launcher.notifications) {
-        win32::notify_best_effort(win32::notify, L"HoyoFlux",
-                                  launch_notification_body(*resolved),
-                                  win32::NotificationKind::Info);
-    }
-    auto outcome = app::run_resolved_launch(options, std::move(*resolved));
+    const bool notifications = config->launcher.notifications;
+    const std::wstring notification_body = launch_notification_body(*resolved);
+    auto outcome = app::run_resolved_launch(
+        options, std::move(*resolved), [notifications, notification_body] {
+            if (notifications) {
+                win32::notify_best_effort(win32::notify, L"HoyoFlux",
+                                          notification_body,
+                                          win32::NotificationKind::Info);
+            }
+        });
     if (!outcome) {
         surface_one_click_error(L"启动失败\n" +
                                 widen(outcome.error().message));

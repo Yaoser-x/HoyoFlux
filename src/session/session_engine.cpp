@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace hoyoflux::session {
 namespace {
@@ -85,7 +86,63 @@ std::string hex_bytes(const std::vector<std::byte>& bytes) {
 SessionEngine::SessionEngine(game::GameAdapter& adapter, SessionConfig config)
     : adapter_(adapter), config_(config) {}
 
+SessionLease::~SessionLease() {
+    if (owns_ && mutex_) {
+        ReleaseMutex(mutex_.get());
+    }
+}
+
+SessionLease::SessionLease(SessionLease&& other) noexcept
+    : mutex_(std::move(other.mutex_)), owns_(std::exchange(other.owns_, false)) {}
+
+SessionLease& SessionLease::operator=(SessionLease&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    if (owns_ && mutex_) {
+        ReleaseMutex(mutex_.get());
+    }
+    mutex_ = std::move(other.mutex_);
+    owns_ = std::exchange(other.owns_, false);
+    return *this;
+}
+
+Result<SessionLease> SessionLease::acquire() {
+    HANDLE raw = CreateMutexW(nullptr, FALSE, L"Local\\HoyoFlux-SessionLease");
+    if (raw == nullptr) {
+        return std::unexpected(Error::make(
+            ErrorCode::OsError, "CreateMutexW for session lease failed",
+            GetLastError()));
+    }
+    win32::UniqueHandle mutex(raw);
+    const DWORD wait = WaitForSingleObject(mutex.get(), 0);
+    if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+        return SessionLease(std::move(mutex));
+    }
+    if (wait == WAIT_TIMEOUT) {
+        return std::unexpected(Error::make(
+            ErrorCode::SessionAlreadyActive,
+            "session-already-active: another HoyoFlux session or recovery is "
+            "already in progress"));
+    }
+    return std::unexpected(Error::make(
+        ErrorCode::OsError, "WaitForSingleObject for session lease failed",
+        GetLastError()));
+}
+
 Result<RecoveryAction> SessionEngine::recover() {
+    auto lease = SessionLease::acquire();
+    if (!lease) {
+        return std::unexpected(lease.error());
+    }
+    return recover(*lease);
+}
+
+Result<RecoveryAction> SessionEngine::recover(SessionLease& lease) {
+    if (!lease.owns()) {
+        return std::unexpected(
+            Error::make(ErrorCode::InvalidArgument, "recover requires a session lease"));
+    }
     auto journal = load_journal();
     if (!journal) {
         return std::unexpected(journal.error());
@@ -144,7 +201,52 @@ Result<RecoveryAction> SessionEngine::recover() {
     return RecoveryAction::Recovered;
 }
 
+Result<void> SessionEngine::preflight(SessionLease& lease) {
+    if (!lease.owns()) {
+        return std::unexpected(Error::make(
+            ErrorCode::InvalidArgument, "session preflight requires a session lease"));
+    }
+    auto action = recover(lease);
+    if (!action) {
+        return std::unexpected(action.error());
+    }
+    if (*action == RecoveryAction::GameStillRunning) {
+        return std::unexpected(Error::make(
+            ErrorCode::SessionAlreadyActive,
+            "session-already-active: the journal references a live process"));
+    }
+    if (*action == RecoveryAction::RecoveryFailed) {
+        return std::unexpected(Error::make(
+            ErrorCode::SessionFailed,
+            "automatic recovery failed; recovery journal retained"));
+    }
+    return {};
+}
+
 Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
+    auto lease = SessionLease::acquire();
+    if (!lease) {
+        return std::unexpected(lease.error());
+    }
+    return run(request, *lease);
+}
+
+Result<SessionContext> SessionEngine::run(const LaunchRequest& request,
+                                          SessionLease& lease) {
+    auto checked = preflight(lease);
+    if (!checked) {
+        return std::unexpected(checked.error());
+    }
+    return run_after_preflight(request, lease);
+}
+
+Result<SessionContext> SessionEngine::run_after_preflight(
+    const LaunchRequest& request, SessionLease& lease) {
+    if (!lease.owns()) {
+        return std::unexpected(Error::make(
+            ErrorCode::InvalidArgument,
+            "run_after_preflight requires a session lease"));
+    }
     SessionContext context;
     context.id = make_session_id();
     context.game = request.game;
@@ -244,26 +346,79 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
         Error error;
     };
     auto finish_failed = [&](SessionFailure failure) -> Result<SessionContext> {
-        if (failure.launched != nullptr) {
-            if (failure.applied != nullptr && !failure.patches_live) {
-                patch::rollback_patch_plan(failure.launched->process, *failure.applied);
+        bool game_dead = failure.launched == nullptr;
+        bool cleanup_failed = false;
+        Error cleanup_error;
+        const auto record_cleanup_error = [&](const Error& error) {
+            if (!cleanup_failed) {
+                cleanup_error = error;
             }
-            if (!failure.patches_live ||
-                win32::is_process_running(failure.launched->pid)) {
-                win32::terminate_and_wait(failure.launched->process, 5000);
+            cleanup_failed = true;
+        };
+
+        if (failure.launched != nullptr) {
+            const DWORD initial_wait =
+                WaitForSingleObject(failure.launched->process.get(), 0);
+            if (initial_wait == WAIT_OBJECT_0) {
+                game_dead = true;
+            } else if (initial_wait == WAIT_TIMEOUT) {
+                if (failure.applied != nullptr && !failure.patches_live) {
+                    if (auto rolled_back = patch::rollback_patch_plan(
+                            failure.launched->process, *failure.applied);
+                        !rolled_back) {
+                        record_cleanup_error(rolled_back.error());
+                    }
+                }
+                if (auto terminated = win32::terminate_and_wait(
+                        failure.launched->process, 5000);
+                    !terminated) {
+                    record_cleanup_error(terminated.error());
+                }
+                const DWORD final_wait =
+                    WaitForSingleObject(failure.launched->process.get(), 0);
+                if (final_wait == WAIT_OBJECT_0) {
+                    game_dead = true;
+                } else if (final_wait == WAIT_FAILED) {
+                    record_cleanup_error(Error::make(
+                        ErrorCode::OsError,
+                        "cannot confirm owned game termination",
+                        GetLastError()));
+                }
+            } else {
+                record_cleanup_error(Error::make(
+                    ErrorCode::OsError,
+                    "cannot determine whether owned game has exited",
+                    GetLastError()));
             }
         }
         journal.stage = SessionStage::Failed;
-        save_journal(journal);
+        if (auto saved = save_journal(journal); !saved) {
+            record_cleanup_error(saved.error());
+        }
+        if (!game_dead) {
+            std::string message = failure.error.message;
+            if (cleanup_failed) {
+                message += "; cleanup failed: " + cleanup_error.message;
+            }
+            message += "; owned game death could not be confirmed; recovery "
+                       "journal retained";
+            context.stage = SessionStage::Failed;
+            return std::unexpected(Error::make(ErrorCode::SessionFailed,
+                                               std::move(message),
+                                               cleanup_failed ? cleanup_error.os_code : 0));
+        }
         if (game_has_run) {
             if (auto restored = restore_session_state(); !restored) {
-                context.stage = SessionStage::Failed;
-                return std::unexpected(Error::make(
-                    ErrorCode::SessionFailed,
-                    failure.error.message + "; rollback failed: " +
-                        restored.error().message + "; recovery journal retained",
-                    restored.error().os_code));
+                record_cleanup_error(restored.error());
             }
+        }
+        if (cleanup_failed) {
+            context.stage = SessionStage::Failed;
+            return std::unexpected(Error::make(
+                ErrorCode::SessionFailed,
+                failure.error.message + "; cleanup failed: " +
+                    cleanup_error.message + "; recovery journal retained",
+                cleanup_error.os_code));
         }
         if (auto cleared = clear_journal(); !cleared) {
             context.stage = SessionStage::Failed;
@@ -280,8 +435,12 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     auto launch_plan = adapter_.build_launch_plan(*install, request);
     if (!launch_plan) {
         journal.stage = SessionStage::Failed;
-        save_journal(journal);
-        clear_journal();
+        if (auto saved = save_journal(journal); !saved) {
+            return std::unexpected(saved.error());
+        }
+        if (auto cleared = clear_journal(); !cleared) {
+            return std::unexpected(cleared.error());
+        }
         return std::unexpected(launch_plan.error());
     }
     auto launched =
@@ -290,14 +449,20 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
                                priority_class(launch_plan->priority));
     if (!launched) {
         journal.stage = SessionStage::Failed;
-        save_journal(journal);
-        clear_journal();
+        if (auto saved = save_journal(journal); !saved) {
+            return std::unexpected(saved.error());
+        }
+        if (auto cleared = clear_journal(); !cleared) {
+            return std::unexpected(cleared.error());
+        }
         return std::unexpected(launched.error());
     }
     context.pid = launched->pid;
     journal.pid = launched->pid;
     journal.stage = SessionStage::Resolving;
-    save_journal(journal);
+    if (auto saved = save_journal(journal); !saved) {
+        return finish_failed({&*launched, nullptr, false, saved.error()});
+    }
 
     // ---- Resolving --------------------------------------------------------
     // Engine modules (UnityPlayer.dll etc.) only exist once the game's
@@ -310,10 +475,10 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     auto located = locate_modules(launched->process, *requirements);
     if (!located) {
         // Give the loader a chance, then re-suspend for a stable snapshot.
+        game_has_run = true;
         if (auto resumed = win32::resume_process_threads(launched->pid); !resumed) {
             return finish_failed({&*launched, nullptr, false, resumed.error()});
         }
-        game_has_run = true;
         const auto deadline =
             std::chrono::steady_clock::now() +
             std::chrono::milliseconds(config_.module_wait_timeout_ms);
@@ -355,7 +520,9 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     context.stage = SessionStage::Patching;
     journal.stage = SessionStage::Patching;
     journal.rollback.required = true;
-    save_journal(journal);
+    if (auto saved = save_journal(journal); !saved) {
+        return finish_failed({&*launched, nullptr, game_has_run, saved.error()});
+    }
 
     PatchContext patch_context{*resolved, request.profile,
                                bases.empty() ? 0 : bases.front(), *old_version};
@@ -410,7 +577,9 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
     // persistent/display state still has to survive a launcher crash (Test D).
     context.stage = SessionStage::Running;
     journal.stage = SessionStage::Running;
-    save_journal(journal);
+    if (auto saved = save_journal(journal); !saved) {
+        return finish_failed({&*launched, &applied, false, saved.error()});
+    }
 
     const auto game_started = std::chrono::steady_clock::now();
     if (game_has_run) {
@@ -418,7 +587,10 @@ Result<SessionContext> SessionEngine::run(const LaunchRequest& request) {
             return finish_failed({&*launched, &applied, false, resumed.error()});
         }
     } else {
-        ResumeThread(launched->thread.get());
+        if (auto resumed = win32::resume_thread(launched->thread); !resumed) {
+            return finish_failed({&*launched, &applied, false, resumed.error()});
+        }
+        game_has_run = true;
     }
 
     // Game is running: keep the game's persisted settings desktop-shaped

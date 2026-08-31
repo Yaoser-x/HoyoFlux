@@ -8,6 +8,7 @@
 #include "session/session_engine.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,6 +49,7 @@ Result<ResolvedLaunch> resolve_launch(const profile::Config& config,
 Result<LaunchOutcome> run_launch(const profile::Config& config,
                                  const LaunchOptions& options);
 Result<LaunchOutcome> run_resolved_launch(const LaunchOptions& options,
-                                          ResolvedLaunch resolved);
+                                          ResolvedLaunch resolved,
+                                          std::function<void()> on_preflight_pass = {});
 
 }  // namespace hoyoflux::app

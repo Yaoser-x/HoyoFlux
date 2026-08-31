@@ -4,6 +4,7 @@
 #include "platform/win32/display.hpp"
 #include "session/journal.hpp"
 
+#include <cmath>
 #include <iostream>
 
 namespace hoyoflux::app {
@@ -56,6 +57,18 @@ Result<ResolvedLaunch> resolve_launch(const profile::Config& config,
             "profile '" + resolved.profile.id + "' belongs to game '" +
                 std::string(to_string(resolved.profile.game)) + "'"));
     }
+    if (options.fps_override &&
+        (*options.fps_override < 10 || *options.fps_override > 1000)) {
+        return std::unexpected(Error::make(
+            ErrorCode::InvalidArgument, "fps override must be within [10, 1000]"));
+    }
+    if (options.dpi_override &&
+        (!std::isfinite(*options.dpi_override) ||
+         *options.dpi_override < 0.25f || *options.dpi_override > 4.0f)) {
+        return std::unexpected(Error::make(
+            ErrorCode::InvalidArgument,
+            "dpi override must be within [0.25, 4.0]"));
+    }
     if (options.fps_override) {
         resolved.profile.runtime.fps = *options.fps_override;
     }
@@ -78,7 +91,8 @@ Result<LaunchOutcome> run_launch(const profile::Config& config,
 }
 
 Result<LaunchOutcome> run_resolved_launch(const LaunchOptions& options,
-                                          ResolvedLaunch resolved) {
+                                          ResolvedLaunch resolved,
+                                          std::function<void()> on_preflight_pass) {
     LaunchRequest request;
     request.game = options.game;
     request.profile = resolved.profile;
@@ -90,7 +104,17 @@ Result<LaunchOutcome> run_resolved_launch(const LaunchOptions& options,
     session_config.verbose = options.verbose;
     auto adapter = game::make_adapter(options.game);
     session::SessionEngine engine(*adapter, session_config);
-    auto context = engine.run(request);
+    auto lease = session::SessionLease::acquire();
+    if (!lease) {
+        return std::unexpected(lease.error());
+    }
+    if (auto preflight = engine.preflight(*lease); !preflight) {
+        return std::unexpected(preflight.error());
+    }
+    if (on_preflight_pass) {
+        on_preflight_pass();
+    }
+    auto context = engine.run_after_preflight(request, *lease);
     if (!context) {
         return std::unexpected(context.error());
     }

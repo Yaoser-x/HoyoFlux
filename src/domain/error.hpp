@@ -27,6 +27,7 @@ enum class ErrorCode {
     ElevationCancelled,    // the user declined a runas consent prompt
     ProcessSpawnFailed,
     ProcessNotFound,
+    SessionAlreadyActive,
     RegistryReadFailed,
 
     // pe / snapshot
@@ -77,6 +78,7 @@ using Result = std::expected<T, Error>;
     case ElevationCancelled: return "elevation-cancelled";
     case ProcessSpawnFailed: return "process-spawn-failed";
     case ProcessNotFound: return "process-not-found";
+    case SessionAlreadyActive: return "session-already-active";
     case RegistryReadFailed: return "registry-read-failed";
     case InvalidPe: return "invalid-pe";
     case SectionNotFound: return "section-not-found";
