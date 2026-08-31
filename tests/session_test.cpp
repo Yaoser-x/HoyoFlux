@@ -220,9 +220,15 @@ TEST_CASE("schema 1 journals still parse (physical displays only)",
 TEST_CASE("schema 2 rejects incomplete and semantically invalid journals",
           "[session][journal][corrupt]") {
     const auto write = [](std::string_view text) {
-        std::ofstream out(session::journal_path(),
+        const auto path = session::journal_path();
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        REQUIRE_FALSE(ec);
+        std::ofstream out(path,
                           std::ios::binary | std::ios::trunc);
+        REQUIRE(out.is_open());
         out << text;
+        REQUIRE(out.good());
     };
     const std::string minimal =
         R"({"schema":2,"session_id":"s","game":"genshin","pid":0,"stage":"idle","rollback":{"required":false,"physical_displays":[],"persistent_state":null}})";
