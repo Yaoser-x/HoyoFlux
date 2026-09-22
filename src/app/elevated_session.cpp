@@ -341,6 +341,7 @@ Result<int> launch_elevated_session(const AppPaths& paths,
     if (!server) return std::unexpected(server.error());
 
     std::optional<Error> child_error;
+    bool child_session_ready = false;
     win32::ElevationResult elevation = win32::ElevationResult::Completed;
     auto child = win32::relaunch_elevated_and_wait(
         {std::wstring(win32::kInternalElevatedArgument) + L"=" + ascii_wide(*token),
@@ -369,9 +370,16 @@ Result<int> launch_elevated_session(const AppPaths& paths,
             if (auto accepted = send_message(server->handle(),
                                              "CONFIG\n" + *config_hash, true);
                 !accepted) return accepted;
-            auto result = receive_message(server->handle(), true);
-            if (!result) return std::unexpected(result.error());
-            return ensure_valid_child_result(*result, &child_error);
+            auto acknowledgement = receive_message(server->handle(), true);
+            if (!acknowledgement) return std::unexpected(acknowledgement.error());
+            if (*acknowledgement == "READY\n") {
+                child_session_ready = true;
+                return {};
+            }
+            // Configuration verification can fail before a session is ready.
+            // That failure is already a structured result, rather than a
+            // handshake timeout; wait for the child to exit normally below.
+            return ensure_valid_child_result(*acknowledgement, &child_error);
         });
     if (!child) {
         if (elevation == win32::ElevationResult::Cancelled) {
@@ -379,6 +387,20 @@ Result<int> launch_elevated_session(const AppPaths& paths,
                                                 "elevation cancelled"));
         }
         return std::unexpected(child.error());
+    }
+    if (child_error) return std::unexpected(std::move(*child_error));
+    if (!child_session_ready) return std::unexpected(Error::make(
+        ErrorCode::SessionFailed,
+        "提升进程未确认会话已接管"));
+
+    // The handshake deadline covers only the connection, SID and immutable
+    // configuration checks. The session itself intentionally lasts until the
+    // game exits, so its result is read only after relaunch_elevated_and_wait
+    // has observed the child process exit.
+    auto result = receive_message(server->handle(), true);
+    if (!result) return std::unexpected(result.error());
+    if (auto valid = ensure_valid_child_result(*result, &child_error); !valid) {
+        return std::unexpected(valid.error());
     }
     if (child_error) return std::unexpected(std::move(*child_error));
     return *child;
@@ -459,6 +481,10 @@ Result<int> run_elevated_session_child(const AppPaths& paths,
         send_child_result(pipe, 1, detail);
         close_pipe();
         return std::unexpected(Error::make(ErrorCode::ConfigParseFailed, detail));
+    }
+    if (auto ready = send_message(pipe, "READY\n", false); !ready) {
+        close_pipe();
+        return std::unexpected(ready.error());
     }
     auto run = run_session_without_ui(paths, *config);
     if (!run) {
