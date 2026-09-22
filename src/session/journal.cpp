@@ -2,6 +2,7 @@
 
 #include "domain/game.hpp"
 #include "platform/win32/text.hpp"
+#include "platform/win32/file.hpp"
 
 #include <array>
 #include <atomic>
@@ -12,7 +13,6 @@
 #include <sstream>
 #include <system_error>
 
-#include <shlobj.h>
 #include <windows.h>
 
 namespace hoyoflux::session {
@@ -776,26 +776,8 @@ std::string_view to_string(SessionStage stage) {
     return "unknown";
 }
 
-std::filesystem::path journal_path() {
-    wchar_t override_path[32768];
-    const DWORD override_size = GetEnvironmentVariableW(
-        L"HOYOFLUX_STATE_DIR", override_path, std::size(override_path));
-    if (override_size > 0 && override_size < std::size(override_path)) {
-        return std::filesystem::path(
-                   std::wstring_view(override_path, override_size)) /
-               L"active-session.json";
-    }
-    wchar_t* raw = nullptr;
-    if (SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr,
-                             &raw) != S_OK) {
-        return {};
-    }
-    std::filesystem::path base(raw);
-    CoTaskMemFree(raw);
-    return base / L"HoyoFlux" / L"state" / L"active-session.json";
-}
-
-Result<void> save_journal(const ActiveSessionJournal& journal) {
+Result<void> save_journal(const std::filesystem::path& path,
+                          const ActiveSessionJournal& journal) {
     std::ostringstream out;
     out << "{\n";
     out << "  \"schema\": " << journal.schema << ",\n";
@@ -829,10 +811,9 @@ Result<void> save_journal(const ActiveSessionJournal& journal) {
             "injected journal save failure for durability test"));
     }
 
-    const auto path = journal_path();
     if (path.empty()) {
-        return std::unexpected(
-            Error::make(ErrorCode::SessionFailed, "cannot resolve LOCALAPPDATA"));
+        return std::unexpected(Error::make(
+            ErrorCode::SessionFailed, "journal path is empty"));
     }
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -842,31 +823,12 @@ Result<void> save_journal(const ActiveSessionJournal& journal) {
                                            ec.value()));
     }
 
-    // Atomic-ish write: temp file in the same directory, then rename over.
-    const auto temp = path.parent_path() / (path.filename().wstring() + L".tmp");
-    {
-        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-        if (!file) {
-            return std::unexpected(
-                Error::make(ErrorCode::SessionFailed, "cannot open journal temp file"));
-        }
-        file.write(body.data(), static_cast<std::streamsize>(body.size()));
-        file.flush();
-        if (!file) {
-            return std::unexpected(
-                Error::make(ErrorCode::SessionFailed, "cannot write journal"));
-        }
-        file.close();
-        if (!file) {
-            return std::unexpected(
-                Error::make(ErrorCode::SessionFailed, "cannot close journal temp file"));
-        }
-    }
-    std::filesystem::rename(temp, path, ec);
-    if (ec) {
-        std::filesystem::remove(temp, ec);
-        return std::unexpected(
-            Error::make(ErrorCode::SessionFailed, "cannot replace journal", ec.value()));
+    auto saved = win32::write_file_atomic(path, body);
+    if (!saved) {
+        Error error = saved.error();
+        error.code = ErrorCode::SessionFailed;
+        error.message = "cannot durably save journal: " + error.message;
+        return std::unexpected(std::move(error));
     }
     return {};
 }
@@ -876,11 +838,11 @@ void set_journal_save_failure_for_testing(std::optional<size_t> fail_on_save) {
     g_fail_on_save.store(fail_on_save.value_or(0));
 }
 
-Result<std::optional<ActiveSessionJournal>> load_journal() {
-    const auto path = journal_path();
+Result<std::optional<ActiveSessionJournal>> load_journal(
+    const std::filesystem::path& path) {
     if (path.empty()) {
-        return std::unexpected(
-            Error::make(ErrorCode::SessionFailed, "cannot resolve LOCALAPPDATA"));
+        return std::unexpected(Error::make(
+            ErrorCode::SessionFailed, "journal path is empty"));
     }
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
@@ -1014,13 +976,21 @@ Result<std::optional<ActiveSessionJournal>> load_journal() {
     return std::optional<ActiveSessionJournal>{std::move(journal)};
 }
 
-Result<void> clear_journal() {
-    std::error_code ec;
-    const auto path = journal_path();
-    std::filesystem::remove(path, ec);
-    if (ec) {
-        return std::unexpected(
-            Error::make(ErrorCode::SessionFailed, "cannot delete journal", ec.value()));
+Result<void> clear_journal(const std::filesystem::path& path) {
+    auto current = win32::read_file_bytes(path);
+    if (!current) {
+        if (current.error().os_code == ERROR_FILE_NOT_FOUND) return {};
+        Error error = current.error();
+        error.code = ErrorCode::SessionFailed;
+        error.message = "cannot read journal before delete: " + error.message;
+        return std::unexpected(std::move(error));
+    }
+    auto removed = win32::remove_file_if_unchanged(path, *current);
+    if (!removed) {
+        Error error = removed.error();
+        error.code = ErrorCode::SessionFailed;
+        error.message = "cannot delete journal: " + error.message;
+        return std::unexpected(std::move(error));
     }
     return {};
 }

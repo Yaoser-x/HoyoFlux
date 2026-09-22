@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">HoyoFlux logo</title>
+  <desc id="desc">A cool blue flowing geometric H on a deep navy rounded square.</desc>
+  <defs>
+    <linearGradient id="bg" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#122845"/>
+      <stop offset="0.58" stop-color="#09182d"/>
+      <stop offset="1" stop-color="#050d1b"/>
+    </linearGradient>
+    <linearGradient id="left" x1="145" y1="410" x2="282" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3d7cff"/>
+      <stop offset="1" stop-color="#47e6ff"/>
+    </linearGradient>
+    <linearGradient id="right" x1="356" y1="105" x2="356" y2="414" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8bf4ff"/>
+      <stop offset="1" stop-color="#676bff"/>
+    </linearGradient>
+    <linearGradient id="bridge" x1="176" y1="244" x2="346" y2="276" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#d8fbff"/>
+      <stop offset="0.52" stop-color="#67ddff"/>
+      <stop offset="1" stop-color="#87a1ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="20" y="20" width="472" height="472" rx="112" fill="url(#bg)"/>
+  <path d="M154 405C154 262 166 162 271 105" fill="none" stroke="url(#left)" stroke-width="58" stroke-linecap="round"/>
+  <path d="M358 107C326 203 326 310 360 407" fill="none" stroke="url(#right)" stroke-width="58" stroke-linecap="round"/>
+  <path d="M180 272C226 222 274 300 333 247" fill="none" stroke="url(#bridge)" stroke-width="52" stroke-linecap="round"/>
+  <circle cx="173" cy="259" r="11" fill="#eaffff" opacity=".82"/>
+</svg>

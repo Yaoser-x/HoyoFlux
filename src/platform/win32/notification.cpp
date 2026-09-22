@@ -24,6 +24,7 @@ constexpr UINT kTransientDurationMs = 6000;
 constexpr auto kDrainTimeout = std::chrono::seconds(7);
 constexpr auto kShutdownWait = std::chrono::milliseconds(250);
 constexpr wchar_t kWindowClassName[] = L"HoyoFluxNotificationOwner";
+constexpr WORD kHoyoFluxIconResource = 101;
 
 void copy_text(wchar_t* destination, size_t capacity, std::wstring_view text) {
     const size_t count = std::min(capacity - 1, text.size());
@@ -208,7 +209,11 @@ private:
         data.hWnd = window;
         data.uID = 1;
         data.uFlags = NIF_INFO | NIF_ICON | NIF_TIP;
-        data.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+        data.hIcon = LoadIconW(GetModuleHandleW(nullptr),
+                               MAKEINTRESOURCEW(kHoyoFluxIconResource));
+        if (data.hIcon == nullptr) {
+            data.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+        }
         copy_text(data.szTip, std::size(data.szTip), L"HoyoFlux");
         data.dwInfoFlags = request.kind == NotificationKind::Error
                                ? NIIF_ERROR

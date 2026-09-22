@@ -60,7 +60,14 @@ Result<std::filesystem::path> query_process_path(const UniqueHandle& process);
 // Open an existing process by pid.
 Result<UniqueHandle> open_process(DWORD pid, DWORD access);
 
-// True when a process with this pid is alive.
+enum class ProcessLiveness { Running, Exited, Unknown };
+
+// Access denied and other query failures are Unknown rather than being
+// silently treated as an exited game by migration/recovery.
+ProcessLiveness inspect_process_liveness(DWORD pid);
+
+// Compatibility helper for ordinary runtime callers. Safety-sensitive code
+// must use inspect_process_liveness() and stop on Unknown.
 bool is_process_running(DWORD pid);
 
 // Terminate and wait up to `timeout_ms` for it to exit.

@@ -92,7 +92,7 @@ public:
 
     // HKCU subkeys this game persists display settings into. Games override;
     // the default (empty) means "nothing known to protect". Public because
-    // doctor / state-dump must report on the candidate roots themselves.
+    // The configuration-driven diagnostic report lists candidate roots.
     virtual std::vector<std::wstring> persistent_state_roots() const;
 
     // Version detection (e.g. Genshin old-vs-new by exe size).

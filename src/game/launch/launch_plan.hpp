@@ -2,7 +2,7 @@
 
 // GameLaunchPlan (F1): everything needed to start one game process.
 //
-// Built exclusively by GameAdapters - the session engine and CLI never
+// Built exclusively by GameAdapters - the session engine and front end never
 // compose game arguments themselves. The adapter owns the mapping from
 // Profile (render policy) to the game's actual launch mechanism and
 // validates user passthrough against the fields it manages.

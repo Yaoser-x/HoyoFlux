@@ -2,16 +2,8 @@
 
 #include "domain/launch_request.hpp"
 #include "platform/win32/display.hpp"
-#include "session/journal.hpp"
-
-#include <cmath>
-#include <iostream>
 
 namespace hoyoflux::app {
-
-std::filesystem::path config_path() {
-    return session::journal_path().parent_path().parent_path() / "config.toml";
-}
 
 Result<ResolvedLaunch> resolve_launch(const profile::Config& config,
                                       const LaunchOptions& options) {
@@ -57,27 +49,6 @@ Result<ResolvedLaunch> resolve_launch(const profile::Config& config,
             "profile '" + resolved.profile.id + "' belongs to game '" +
                 std::string(to_string(resolved.profile.game)) + "'"));
     }
-    if (options.fps_override &&
-        (*options.fps_override < 10 || *options.fps_override > 1000)) {
-        return std::unexpected(Error::make(
-            ErrorCode::InvalidArgument, "fps override must be within [10, 1000]"));
-    }
-    if (options.dpi_override &&
-        (!std::isfinite(*options.dpi_override) ||
-         *options.dpi_override < 0.25f || *options.dpi_override > 4.0f)) {
-        return std::unexpected(Error::make(
-            ErrorCode::InvalidArgument,
-            "dpi override must be within [0.25, 4.0]"));
-    }
-    if (options.fps_override) {
-        resolved.profile.runtime.fps = *options.fps_override;
-    }
-    if (options.mobile_ui_override) {
-        resolved.profile.ui.mobile_ui = *options.mobile_ui_override;
-    }
-    if (options.dpi_override) {
-        resolved.profile.ui.dpi_scale = *options.dpi_override;
-    }
     return resolved;
 }
 
@@ -96,12 +67,12 @@ Result<LaunchOutcome> run_resolved_launch(const LaunchOptions& options,
     LaunchRequest request;
     request.game = options.game;
     request.profile = resolved.profile;
-    request.exe_override = options.exe;
-    request.game_args = options.passthrough;
+    request.exe_override = resolved.profile.executable;
+    request.game_args = resolved.profile.arguments;
 
     session::SessionConfig session_config;
     session_config.region = options.region;
-    session_config.verbose = options.verbose;
+    session_config.journal_path = options.journal_path;
     auto adapter = game::make_adapter(options.game);
     session::SessionEngine engine(*adapter, session_config);
     auto lease = session::SessionLease::acquire();

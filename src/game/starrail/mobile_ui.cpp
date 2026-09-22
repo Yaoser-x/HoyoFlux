@@ -26,7 +26,7 @@ Result<std::vector<uintptr_t>> resolve_setters(
         return std::unexpected(Error::make(
             ErrorCode::SignatureNotFound,
             "mobile UI requested but no starrail.uiset signature resolved "
-            "(run `hoyoflux doctor`)"));
+            "(set launcher.action = \"diagnose\" and double-click HoyoFlux)"));
     }
     return setters;
 }

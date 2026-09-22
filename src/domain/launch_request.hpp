@@ -2,7 +2,7 @@
 
 // A fully resolved request to launch one game session.
 //
-// Produced by the application layer from a Profile plus CLI overrides,
+// Produced by the application layer from the selected configuration profile,
 // validated, and handed to the SessionEngine. After construction the engine
 // treats it as immutable.
 
@@ -27,7 +27,7 @@ struct LaunchRequest {
     // must stay attached to the session. Fixed profiles run non-resident.
     bool resident{false};
 
-    // Overrides for doctor / explicit path use.
+    // Optional executable supplied by the selected profile.
     std::optional<std::filesystem::path> exe_override;
 };
 

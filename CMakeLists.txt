@@ -10,8 +10,11 @@ if(HOYOFLUX_PRERELEASE)
 else()
   set(HOYOFLUX_VERSION_SUFFIX "")
 endif()
+set(HOYOFLUX_VERSION_STRING "${PROJECT_VERSION}${HOYOFLUX_VERSION_SUFFIX}")
 configure_file(cmake/version.hpp.in ${CMAKE_BINARY_DIR}/generated/version.hpp
                @ONLY)
+configure_file(cmake/hoyoflux-version.rc.in
+               ${CMAKE_BINARY_DIR}/generated/hoyoflux-version.rc @ONLY)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,7 +51,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Component targets. Dependency direction is strictly one-way:
 #   domain -> platform_win32 / scan -> patch -> game -> session ->
-#   runtime -> app -> cli
+#   runtime -> app
 # Each component declares its own target in its own CMakeLists.txt.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/domain)

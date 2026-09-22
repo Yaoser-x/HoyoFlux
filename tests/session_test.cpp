@@ -36,14 +36,27 @@ namespace {
 
 struct IsolatedStateDirectory {
     IsolatedStateDirectory() {
-        const auto path = std::filesystem::temp_directory_path() /
-                          (L"HoyoFlux-session-test-" +
-                           std::to_wstring(GetCurrentProcessId()));
-        SetEnvironmentVariableW(L"HOYOFLUX_STATE_DIR", path.c_str());
+        path = std::filesystem::temp_directory_path() /
+               (L"HoyoFlux-session-test-" +
+                std::to_wstring(GetCurrentProcessId()));
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+        std::filesystem::create_directories(path);
     }
+    ~IsolatedStateDirectory() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+    std::filesystem::path path;
 };
 
 const IsolatedStateDirectory kIsolatedStateDirectory;
+
+const std::filesystem::path& test_journal_path() {
+    static const auto path =
+        kIsolatedStateDirectory.path / L"active-session.json";
+    return path;
+}
 
 // cmd.exe: present on every Windows test host.
 std::filesystem::path cmd_path() {
@@ -113,6 +126,7 @@ LaunchRequest make_request() {
 
 session::SessionConfig fast_config() {
     session::SessionConfig config;
+    config.journal_path = test_journal_path();
     config.module_wait_timeout_ms = 15000;
     config.module_poll_interval_ms = 20;
     return config;
@@ -129,6 +143,19 @@ uint32_t dead_pid() {
 }
 
 }  // namespace
+
+// Direct journal tests use these local adapters so every production call still
+// receives an explicit path and no process-wide environment override exists.
+namespace hoyoflux::session {
+std::filesystem::path journal_path() { return test_journal_path(); }
+Result<void> save_journal(const ActiveSessionJournal& value) {
+    return save_journal(test_journal_path(), value);
+}
+Result<std::optional<ActiveSessionJournal>> load_journal() {
+    return load_journal(test_journal_path());
+}
+Result<void> clear_journal() { return clear_journal(test_journal_path()); }
+}  // namespace hoyoflux::session
 
 TEST_CASE("journal v2 round trip keeps every field", "[session][journal]") {
     session::ActiveSessionJournal journal;
@@ -450,6 +477,7 @@ TEST_CASE("failed module wait fails the session and cleans the journal",
         {game::ModuleRequirement{"hoyoflux_nonexistent.dll", {".text"}, false}});
     session::SessionEngine engine(adapter, [] {
         session::SessionConfig config;
+        config.journal_path = test_journal_path();
         config.module_wait_timeout_ms = 800;
         config.module_poll_interval_ms = 20;
         return config;

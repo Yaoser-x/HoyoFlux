@@ -8,20 +8,15 @@
 
 ## 工具
 
-```text
-hoyoflux state-dump genshin     # 只读输出受监控根键
-hoyoflux state-dump starrail
-```
-
-输出会逐个候选根键显示：键是否存在，以及每个 `Screenmanager*` 值解码后的 DWORD 数值。该命令不会写入任何内容。
+HoyoFlux 不再提供命令行入口。把 `config.toml` 中的 `launcher.action` 临时改为 `"diagnose"`，双击 EXE 后使用 `data/diagnostics.txt` 确认候选根键、能力和当前状态。需要比较每个注册表值时，使用注册表编辑器分别导出下表中的候选根键；诊断与导出都不会写入游戏状态。
 
 ## 实验步骤（每个游戏、每种安装区域：国服／国际服）
 
-1. **Dump A（桌面基线）。** 通过官方 HoYoPlay 启动游戏，在游戏内设置已知桌面分辨率，退出后执行 `hoyoflux state-dump <game> > dump-A.txt`。
+1. **Dump A（桌面基线）。** 通过官方 HoYoPlay 启动游戏，在游戏内设置已知桌面分辨率，退出后从注册表编辑器导出对应候选根键为 `dump-A.reg`。
 2. **污染运行。** 通过 HoyoFlux 使用移动端配置档启动，游玩或进入主菜单后退出。
-3. **Dump B。** 执行 `hoyoflux state-dump <game> > dump-B.txt`。
-4. **比较。** 执行 `git diff --no-index dump-A.txt dump-B.txt`。每一处变化都是游戏改写的值。F2/F3 门要求所有变化都属于已输出根键下的 `Screenmanager*` 值，否则说明适配器的根键列表不完整。
-5. **恢复检查。** 执行 `hoyoflux recover`（或等待后续任一会话正常结束）后再次输出；所有变化值都必须恢复为 Dump A。
+3. **Dump B。** 退出后再次导出同一根键为 `dump-B.reg`。
+4. **比较。** 比较两份 `.reg` 文件。每一处变化都是游戏改写的值。F2/F3 门要求所有变化都属于候选根键下的 `Screenmanager*` 值，否则说明适配器的根键列表不完整。
+5. **恢复检查。** HoyoFlux 会在会话结束时自动恢复；如果此前异常退出，下次双击会先恢复。恢复后再次导出，所有变化值都必须与 Dump A 一致。
 
 ## 当前受监控根键（候选，需通过本实验验证）
 

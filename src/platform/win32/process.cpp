@@ -172,17 +172,25 @@ Result<UniqueHandle> open_process(DWORD pid, DWORD access) {
     return UniqueHandle(h);
 }
 
-bool is_process_running(DWORD pid) {
+ProcessLiveness inspect_process_liveness(DWORD pid) {
+    if (pid == 0) return ProcessLiveness::Exited;
     UniqueHandle h(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
                                FALSE, pid));
     if (!h) {
-        return false;
+        const DWORD error = GetLastError();
+        return error == ERROR_INVALID_PARAMETER
+            ? ProcessLiveness::Exited : ProcessLiveness::Unknown;
     }
     DWORD exit_code = 0;
     if (!GetExitCodeProcess(h.get(), &exit_code)) {
-        return true;  // cannot tell; assume alive
+        return ProcessLiveness::Unknown;
     }
-    return exit_code == STILL_ACTIVE;
+    return exit_code == STILL_ACTIVE
+        ? ProcessLiveness::Running : ProcessLiveness::Exited;
+}
+
+bool is_process_running(DWORD pid) {
+    return inspect_process_liveness(pid) == ProcessLiveness::Running;
 }
 
 Result<void> terminate_and_wait(const UniqueHandle& process, uint32_t timeout_ms) {

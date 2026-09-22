@@ -8,6 +8,8 @@
 // an error unwinds.
 
 #include <expected>
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -54,13 +56,23 @@ enum class ErrorCode {
 };
 
 struct Error {
+    struct Location {
+        std::string file;
+        std::string profile;
+        std::string field;
+        std::optional<size_t> line;
+        std::optional<size_t> column;
+    };
+
     ErrorCode code{ErrorCode::None};
     std::string message;
     unsigned long os_code{0};  // GetLastError() when code == OsError, else 0
+    std::optional<Location> location;
 
     [[nodiscard]] static Error make(ErrorCode code, std::string message,
-                                    unsigned long os_code = 0) {
-        return Error{code, std::move(message), os_code};
+                                    unsigned long os_code = 0,
+                                    std::optional<Location> location = std::nullopt) {
+        return Error{code, std::move(message), os_code, std::move(location)};
     }
 };
 
