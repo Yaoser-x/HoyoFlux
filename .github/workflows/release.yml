@@ -100,7 +100,8 @@ jobs:
       - name: Clean-package executable smoke
         shell: pwsh
         run: |
-          $smoke = Join-Path $env:RUNNER_TEMP 'hoyoflux-exe-smoke-中文 路径'
+          # SAFER's normal-user token needs a location writable inside the runner user's profile.
+          $smoke = Join-Path $env:LOCALAPPDATA 'Temp\hoyoflux-exe-smoke-中文 路径'
           if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
           New-Item -ItemType Directory -Force -Path $smoke | Out-Null
           Expand-Archive -Path "dist/hoyoflux-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.zip" -DestinationPath $smoke
