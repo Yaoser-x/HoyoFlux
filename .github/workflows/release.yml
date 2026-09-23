@@ -113,10 +113,22 @@ jobs:
             [Security.Principal.WindowsIdentity]::GetCurrent()
           ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
           Write-Output "Smoke runner is in Administrators group: $runnerIsAdministrator"
+          function Start-SmokeExecutable([string]$path) {
+            if ($runnerIsAdministrator) {
+              # Product startup intentionally rejects an administrator token.
+              # Hosted Windows runners use one, so test the same binary through
+              # Windows SAFER's normal-user token without weakening that guard.
+              $runAs = Join-Path $env:SystemRoot 'System32/runas.exe'
+              $arguments = @('/trustlevel:0x20000', "`"$path`"")
+              return Start-Process -FilePath $runAs -ArgumentList $arguments `
+                -WorkingDirectory $env:RUNNER_TEMP -PassThru -Wait
+            }
+            return Start-Process -FilePath $path -WorkingDirectory $env:RUNNER_TEMP `
+              -PassThru -Wait
+          }
           try {
             $env:PATH = "$env:SystemRoot\System32"
-            $firstRun = Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP `
-              -PassThru -Wait
+            $firstRun = Start-SmokeExecutable $exe
             $configPath = Join-Path $smoke 'config.toml'
             for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path $configPath); $attempt++) {
               Start-Sleep -Seconds 1
@@ -135,8 +147,7 @@ jobs:
             Set-Content -LiteralPath (Join-Path $smoke 'config.toml') -Value $config -Encoding utf8
             $reportPath = Join-Path $smoke 'data/diagnostics.txt'
             $null = Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
-            $diagnoseRun = Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP `
-              -PassThru -Wait
+            $diagnoseRun = Start-SmokeExecutable $exe
             for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path $reportPath); $attempt++) {
               Start-Sleep -Seconds 1
             }
