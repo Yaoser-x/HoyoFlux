@@ -277,7 +277,10 @@ if (-not $isElevatedRunner) {
 
 try {
     $testUser = $userNamePrefix + [guid]::NewGuid().ToString('N').Substring(0, 12)
-    $password = 'Hf9!' + [guid]::NewGuid().ToString('N') + 'xZ2@'
+    # net.exe prompts interactively for passwords longer than 14 characters.
+    # Keep the temporary credential within that limit while retaining all four
+    # character classes required by the hosted Windows account policy.
+    $password = 'Hf9!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
     $net = Join-Path $env:SystemRoot 'System32/net.exe'
     $createOutput = & $net user $testUser $password /add 2>&1
     if ($LASTEXITCODE -ne 0) {
