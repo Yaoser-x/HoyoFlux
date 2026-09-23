@@ -10,7 +10,7 @@ add_executable(hoyoflux WIN32
   elevated_session.cpp
   launch_service.cpp
   portable_migration.cpp
-  hoyoflux.rc
+  ${CMAKE_BINARY_DIR}/generated/hoyoflux.rc
   ${CMAKE_BINARY_DIR}/generated/hoyoflux-version.rc
 )
 

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
-project(HoyoFlux VERSION 1.0.0 LANGUAGES CXX)
+project(HoyoFlux VERSION 1.1.0 LANGUAGES CXX)
 
 # Version single source (plan §1): CMake generates version.hpp; code reads
 # HOYOFLUX_VERSION_STRING from it. A non-empty prerelease value marks a
-# prerelease build; the 1.0.0 release build is stable.
+# prerelease build; stable release builds leave it empty.
 set(HOYOFLUX_PRERELEASE "")
 if(HOYOFLUX_PRERELEASE)
   set(HOYOFLUX_VERSION_SUFFIX "-${HOYOFLUX_PRERELEASE}")
@@ -15,6 +15,14 @@ configure_file(cmake/version.hpp.in ${CMAKE_BINARY_DIR}/generated/version.hpp
                @ONLY)
 configure_file(cmake/hoyoflux-version.rc.in
                ${CMAKE_BINARY_DIR}/generated/hoyoflux-version.rc @ONLY)
+set(HOYOFLUX_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/hoyoflux.ico")
+set(HOYOFLUX_MANIFEST_PATH "${CMAKE_BINARY_DIR}/generated/hoyoflux.manifest")
+file(TO_CMAKE_PATH "${HOYOFLUX_ICON_PATH}" HOYOFLUX_ICON_PATH)
+file(TO_CMAKE_PATH "${HOYOFLUX_MANIFEST_PATH}" HOYOFLUX_MANIFEST_PATH)
+configure_file(src/app/hoyoflux.manifest.in
+               ${HOYOFLUX_MANIFEST_PATH} @ONLY)
+configure_file(cmake/hoyoflux.rc.in
+               ${CMAKE_BINARY_DIR}/generated/hoyoflux.rc @ONLY)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

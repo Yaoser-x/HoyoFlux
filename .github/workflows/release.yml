@@ -93,7 +93,7 @@ jobs:
           if (Test-Path (Join-Path $smoke 'config.toml')) {
             throw 'package must allow the EXE to create first-run config.toml'
           }
-          foreach ($required in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'config.example.toml', 'docs/compatibility-matrix.md', 'docs/persistent-state-experiment.md', 'assets/hoyoflux.ico')) {
+          foreach ($required in @('README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'config.example.toml', 'docs/compatibility-matrix.md', 'docs/persistent-state-experiment.md', 'assets/hoyoflux.ico')) {
             if (-not (Test-Path (Join-Path $smoke $required))) { throw "package is missing $required" }
           }
 
@@ -117,7 +117,13 @@ jobs:
             $config = $config -replace 'action = "launch"', 'action = "diagnose"'
             Set-Content -LiteralPath (Join-Path $smoke 'config.toml') -Value $config -Encoding utf8
             Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP -Wait
-            if (-not (Test-Path (Join-Path $smoke 'data/diagnostics.txt'))) { throw 'diagnose EXE launch did not write diagnostics.txt' }
+            $reportPath = Join-Path $smoke 'data/diagnostics.txt'
+            if (-not (Test-Path $reportPath)) { throw 'diagnose EXE launch did not write diagnostics.txt' }
+            $report = Get-Content -LiteralPath $reportPath -Raw
+            $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
+            if ($report -notmatch [regex]::Escape("HoyoFlux 诊断报告 $expectedVersion")) {
+              throw "diagnostic report version does not match $expectedVersion"
+            }
             if (Test-Path $legacy) { throw 'EXE launch created AppData state' }
           } finally {
             $env:PATH = $oldPath

@@ -24,6 +24,31 @@ function Test-ResourceText([string]$Text) {
     Assert-Release (([regex]::Matches($iconBlock, '(?m)^\s*Name: \(ID')).Count -eq 7) 'EXE must contain seven ICON images'
 }
 
+function Get-EmbeddedManifestText([string]$Text) {
+    $marker = 'Type: MANIFEST (ID 24)'
+    $resourceStart = $Text.IndexOf($marker, [StringComparison]::Ordinal)
+    Assert-Release ($resourceStart -ge 0) 'EXE does not contain a manifest resource'
+    $manifestBlock = $Text.Substring($resourceStart)
+    $dataStart = $manifestBlock.IndexOf('Data (', [StringComparison]::Ordinal)
+    Assert-Release ($dataStart -ge 0) 'manifest resource data is missing'
+    $dataEndMatch = [regex]::Match($manifestBlock.Substring($dataStart), '(?m)^\s*\)\s*$')
+    Assert-Release $dataEndMatch.Success 'manifest resource data is truncated'
+    $dataText = $manifestBlock.Substring($dataStart, $dataEndMatch.Index)
+    $hex = [Text.StringBuilder]::new()
+    foreach ($line in ($dataText -split "`r?`n")) {
+        $lineMatch = [regex]::Match($line, '^\s*[0-9A-Fa-f]{4}:\s*([0-9A-Fa-f ]+?)\s+\|')
+        if ($lineMatch.Success) {
+            [void]$hex.Append(($lineMatch.Groups[1].Value -replace '\s', ''))
+        }
+    }
+    Assert-Release ($hex.Length -gt 0 -and $hex.Length % 2 -eq 0) 'manifest resource hex data is invalid'
+    $bytes = [byte[]]::new($hex.Length / 2)
+    for ($index = 0; $index -lt $hex.Length; $index += 2) {
+        $bytes[$index / 2] = [Convert]::ToByte($hex.ToString($index, 2), 16)
+    }
+    return [Text.Encoding]::UTF8.GetString($bytes)
+}
+
 function Get-IcoSizes([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
     Assert-Release ($bytes.Length -ge 6) 'ICO is truncated'
@@ -159,7 +184,8 @@ $headerText = $headers -join "`n"
 Assert-ToolSucceeded $LASTEXITCODE $headerText 'llvm-readobj header inspection'
 Assert-Release ($headerText -match 'IMAGE_SUBSYSTEM_WINDOWS_GUI') 'EXE is not linked as a Windows GUI program'
 Assert-Release (($resourceText -split 'Type: MANIFEST \(ID 24\)').Count -eq 2) 'EXE must contain exactly one manifest resource'
-Assert-Release ($resourceText -match 'asInvoker') 'EXE manifest must remain asInvoker'
+$embeddedManifest = Get-EmbeddedManifestText $resourceText
+Assert-Release ($embeddedManifest -match 'level="asInvoker"') 'EXE manifest must remain asInvoker'
 
 $imports = @(& $objdump -p $exePath 2>&1)
 $importText = $imports -join "`n"
@@ -177,6 +203,8 @@ $fileVersion = Get-PeVersionString $exePath 'FileVersion'
 $productVersion = Get-PeVersionString $exePath 'ProductVersion'
 Assert-Release ($fileVersion -eq $configuredVersion) 'PE FileVersion differs from CMake version source'
 Assert-Release ($productVersion -eq $configuredVersion) 'PE ProductVersion differs from CMake version source'
+$manifestVersion = [regex]::Match($embeddedManifest, '<assemblyIdentity version="([0-9.]+)"').Groups[1].Value
+Assert-Release ($manifestVersion -eq "$configuredVersion.0") 'application manifest identity differs from CMake version source'
 
 if ($PackageDirectory) {
     $package = [IO.Path]::GetFullPath($PackageDirectory)
@@ -185,7 +213,8 @@ if ($PackageDirectory) {
     New-Item -ItemType Directory -Path (Join-Path $package 'assets') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $package 'docs') | Out-Null
     Copy-Item -LiteralPath $exePath -Destination (Join-Path $package 'hoyoflux.exe')
-    Copy-Item -LiteralPath (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE'),
+    Copy-Item -LiteralPath (Join-Path $root 'README.md'), (Join-Path $root 'CHANGELOG.md'),
+        (Join-Path $root 'LICENSE'),
         (Join-Path $root 'THIRD_PARTY_NOTICES.md'), (Join-Path $root 'config.example.toml') -Destination $package
     Copy-Item -LiteralPath (Join-Path $root 'docs/compatibility-matrix.md'),
         (Join-Path $root 'docs/persistent-state-experiment.md') -Destination (Join-Path $package 'docs')
