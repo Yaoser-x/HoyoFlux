@@ -1,47 +1,7 @@
 #pragma once
 
-// TOML profile store (A9): %LOCALAPPDATA%\HoyoFlux\config.toml, parsed once
-// at startup into typed domain::Profile values. Never touched on the hot
-// path - the session engine only receives resolved structs.
-//
-// Schema (all fields optional; missing values keep the defaults below):
-//
-//   default_profile = "desktop"  # legacy fallback; fresh configs use [defaults]
-//   preset_revision = 4       # built-in preset evolution, not data schema
-//
-//   [profiles.desktop.render]
-//   resolution = "2560x1440"     # "WxH"; absent = leave as-is
-//   fullscreen = "windowed"     # exclusive | windowed; absent = leave as-is
-//                               # (borderless parses but no game can set it
-//                               # via launch arguments, so it fails the gate)
-//   persistence = "session"     # session | persistent
-//   monitor = 0                 # display index; absent = primary
-//
-//   [profiles.desktop.runtime]
-//   fps = 120
-//   priority = "normal"          # realtime | high | above_normal | normal
-//                                # | below_normal
-//
-//   [profiles.desktop.runtime.power_save]
-//   enabled = false
-//   fps = 30
-//
-//   [profiles.desktop.ui]
-//   mobile_ui = false
-//   dpi_scale = 1.0             # absent = leave game default
-//
-// Every profile also takes `game = "genshin" | "starrail"` (required) and
-// `match = "manual" | "auto"` (optional, default manual). The structured
-// form declares what a profile is for (F8):
-//
-//   [profiles.example_mobile.match]
-//   auto_select = true
-//   portrait = true              # or device_name / resolution / aspect_ratio
-//   priority = 0                 # tie-break among equally specific matches
-//
-// Auto selection order: exact device identity > exact resolution > aspect
-// ratio > orientation. Profiles without auto_select = true are never picked
-// automatically; the default_profile is the final fallback.
+// Portable TOML profile store. Schema 2 keeps profile settings flat while the
+// loader still accepts schema 1 long enough to migrate it atomically.
 
 #include "domain/error.hpp"
 #include "domain/game.hpp"
@@ -57,21 +17,33 @@
 namespace hoyoflux::profile {
 
 enum class LauncherRegion { Auto, Cn, Global };
+enum class LauncherAction { Launch, Diagnose };
 
 struct LauncherConfig {
     GameId game{GameId::Genshin};
     std::string profile{"auto"};
     LauncherRegion region{LauncherRegion::Auto};
+    LauncherAction action{LauncherAction::Launch};
     bool notifications{true};
 };
 
 struct Config {
     std::vector<Profile> profiles;
-    std::string default_profile;  // legacy fallback
-    std::string genshin_default;
-    std::string starrail_default;
+    std::string default_profile;  // populated only while reading schema 1
+    std::string genshin_default{"desktop"};
+    std::string starrail_default{"starrail_desktop"};
     LauncherConfig launcher;
-    int preset_revision{1};  // built-in preset evolution; absent in legacy files
+    int schema{2};
+};
+
+// A validated schema-1 conversion held entirely in memory.  Preparing this
+// object has no filesystem effects; callers may inspect it before committing
+// a migration while holding their own session/migration lock.
+struct ConfigMigrationPreparation {
+    Config source;
+    Config converted;
+    std::string source_text;
+    std::string converted_text;
 };
 
 struct DisplayFacts {
@@ -102,19 +74,46 @@ struct AutoProfileDecision {
 // The document written when no config file exists (also the documentation).
 [[nodiscard]] std::string default_config_toml();
 
-// Parse a config document. Unknown keys are ignored (forward compatibility);
-// malformed TOML or bad field values are errors naming the offending field.
-Result<Config> parse_config(std::string_view toml_text);
+// Schema 2 rejects unknown keys and reports source locations where available.
+// base_directory resolves relative per-profile executable paths.
+Result<Config> parse_config(
+    std::string_view toml_text,
+    const std::filesystem::path& base_directory = {});
 
-// Load %LOCALAPPDATA%\HoyoFlux\config.toml. A missing file yields the
-// default document (desktop/starrail_desktop profiles); a broken one is an error
-// the user must fix (`hoyoflux doctor` shows it).
-Result<Config> load_config(const std::filesystem::path& path);
+// Read and validate a config without creating a backup, converting schema 1,
+// or changing timestamps/content. Missing files are errors. The application
+// materializes defaults explicitly so first run can stop before launching.
+Result<Config> read_config(const std::filesystem::path& path);
+
+// Parses only the valid TOML launcher section to decide whether an explicit
+// diagnostic request can proceed even when another profile has a validation
+// error. It never guesses from malformed text and never writes a file.
+Result<LauncherAction> read_declared_launcher_action(
+    const std::filesystem::path& path);
+
+// Build and commit the schema-1 to schema-2 conversion explicitly. Commit
+// archives the original, publishes the converted bytes, rereads them from
+// disk, and compares their effective behavior with the prepared source.
+Result<ConfigMigrationPreparation> prepare_config_migration(
+    const std::filesystem::path& path);
+Result<Config> commit_config_migration(
+    const std::filesystem::path& path,
+    const std::filesystem::path& backup_directory,
+    const ConfigMigrationPreparation& preparation);
+Result<Config> migrate_config_file(const std::filesystem::path& path,
+                                   const std::filesystem::path& backup_directory = {});
+
+Result<void> write_default_config(const std::filesystem::path& path);
+
+// Canonical schema-2 output used by the legacy migration.
+[[nodiscard]] std::string serialize_config(const Config& config);
+[[nodiscard]] bool configs_equivalent(const Config& left, const Config& right);
 
 // Find a profile by id.
 Result<Profile> find_profile(const Config& config, std::string_view id);
 
-// `--profile auto`: pick the profile for `game` from the attached displays.
+// With launcher.profile = "auto", pick the profile for `game` from attached
+// displays.
 // Heuristic: with a portrait display attached, the first mobile-UI profile
 // for the game; otherwise the first non-mobile profile for the game.
 Result<Profile> match_auto_profile(const Config& config, GameId game,

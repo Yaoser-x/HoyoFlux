@@ -9,6 +9,7 @@ out/
 *.local.toml
 
 # Runtime state
+/data/
 /state/
 /logs/
 active-session.json

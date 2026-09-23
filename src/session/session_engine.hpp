@@ -25,6 +25,7 @@
 #include "game/game_adapter.hpp"
 
 #include <cstdint>
+#include <filesystem>
 
 namespace hoyoflux::session {
 
@@ -62,6 +63,7 @@ enum class RecoveryAction {
 };
 
 struct SessionConfig {
+    std::filesystem::path journal_path;
     game::Region region{game::Region::Auto};
     // How long to wait for engine modules (UnityPlayer.dll, UserAssembly.dll,
     // GameAssembly.dll) to be loaded by the game after it starts running.

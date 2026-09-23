@@ -7,9 +7,12 @@
 #include <shellapi.h>
 
 #include <filesystem>
+#include <optional>
 
 namespace hoyoflux::win32 {
 namespace {
+
+constexpr uint32_t kHandshakeAbortWaitMs = 5000;
 
 Result<std::filesystem::path> current_executable_path() {
     std::wstring path(256, L'\0');
@@ -32,7 +35,8 @@ Result<std::filesystem::path> current_executable_path() {
 }  // namespace
 
 Result<int> relaunch_elevated_and_wait(
-    const std::vector<std::wstring>& arguments, ElevationResult* result) {
+    const std::vector<std::wstring>& arguments, ElevationResult* result,
+    const std::function<Result<void>(DWORD)>& after_launch) {
     if (result != nullptr) {
         *result = ElevationResult::Completed;
     }
@@ -68,6 +72,19 @@ Result<int> relaunch_elevated_and_wait(
         return std::unexpected(Error::make(
             ErrorCode::OsError,
             "ShellExecuteExW returned no child process handle"));
+    }
+    std::optional<Error> handshake_error;
+    if (after_launch) {
+        auto handshake = after_launch(GetProcessId(child.get()));
+        if (!handshake) handshake_error = handshake.error();
+    }
+    // The child cannot begin a game session before the parent has delivered
+    // the validated configuration digest over the private pipe.  If that
+    // handshake fails, leaving it alive would make the ordinary launcher
+    // block forever on a child that is waiting for data we will never send.
+    if (handshake_error) {
+        terminate_and_wait(child, kHandshakeAbortWaitMs);
+        return std::unexpected(std::move(*handshake_error));
     }
     if (WaitForSingleObject(child.get(), INFINITE) == WAIT_FAILED) {
         return std::unexpected(Error::make(

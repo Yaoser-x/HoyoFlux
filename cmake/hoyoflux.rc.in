@@ -1,0 +1,10 @@
+#include <windows.h>
+
+#define IDI_HOYOFLUX 101
+
+IDI_HOYOFLUX ICON "@HOYOFLUX_ICON_PATH@"
+1 RT_MANIFEST "@HOYOFLUX_MANIFEST_PATH@"
+
+// Keep the generated resource file version-sensitive so manifest-only updates
+// trigger RC recompilation even when the resource compiler omits include deps.
+// HoyoFlux version: @HOYOFLUX_VERSION_STRING@

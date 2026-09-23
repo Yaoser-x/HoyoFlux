@@ -9,7 +9,7 @@
 // launch whose profile requires an unsupported capability *before* the game
 // process exists.
 //
-// The same report powers `hoyoflux doctor`'s compatibility output, so the
+// The same report powers the configuration-driven diagnostic output, so the
 // launcher has exactly one source of truth for "what works on this install".
 
 #include "domain/error.hpp"

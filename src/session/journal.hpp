@@ -6,8 +6,9 @@
 // verified recovery - plan section 10.3: a failed restore never clears the
 // file).
 //
-// Location: %LOCALAPPDATA%\HoyoFlux\state\active-session.json. Writes are
-// atomic (temp file + rename) so a crash mid-write cannot corrupt it.
+// The caller owns the journal path. Production passes the portable
+// `data/state/active-session.json`; tests pass an isolated temporary path.
+// Writes are atomic (temp file + rename) so a crash cannot corrupt it.
 
 #include "domain/persistent_state.hpp"
 #include "domain/session.hpp"
@@ -45,17 +46,17 @@ struct ActiveSessionJournal {
     JournalRollback rollback;
 };
 
-[[nodiscard]] std::filesystem::path journal_path();
-
-Result<void> save_journal(const ActiveSessionJournal& journal);
+Result<void> save_journal(const std::filesystem::path& path,
+                          const ActiveSessionJournal& journal);
 
 // Test-only seam for deterministic journal durability failure tests. A value
 // of N makes the Nth save call fail and resets the call counter.
 void set_journal_save_failure_for_testing(std::optional<size_t> fail_on_save);
 // std::nullopt when no journal exists; a JournalCorrupt error when one does
 // but cannot be parsed (kept on disk for diagnosis, never auto-deleted).
-Result<std::optional<ActiveSessionJournal>> load_journal();
-Result<void> clear_journal();
+Result<std::optional<ActiveSessionJournal>> load_journal(
+    const std::filesystem::path& path);
+Result<void> clear_journal(const std::filesystem::path& path);
 
 [[nodiscard]] std::string_view to_string(SessionStage stage);
 

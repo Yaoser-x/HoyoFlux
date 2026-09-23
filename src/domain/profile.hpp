@@ -9,9 +9,11 @@
 #include "game.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace hoyoflux {
 
@@ -68,10 +70,10 @@ struct UiPolicy {
     std::optional<float> dpi_scale;  // 1.0 == 100%; absent == leave game default
 };
 
-// How a profile is selected when the user asks for `--profile auto` (F8).
+// How a profile is selected when launcher.profile is `auto`.
 // A profile declares WHAT it is for; the matcher walks the displays and
 // picks by identity before geometry. A profile with auto_select=false is
-// never chosen automatically - only an explicit --profile can select it.
+// never chosen automatically - only a named launcher.profile can select it.
 struct MatchPolicy {
     bool auto_select{false};
 
@@ -91,6 +93,8 @@ struct Profile {
     UiPolicy ui;
     RuntimePolicy runtime;
     MatchPolicy match{};  // auto_select=false: manual by default
+    std::optional<std::filesystem::path> executable;
+    std::vector<std::wstring> arguments;
 };
 
 }  // namespace hoyoflux

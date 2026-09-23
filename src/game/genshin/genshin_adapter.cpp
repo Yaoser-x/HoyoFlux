@@ -247,7 +247,7 @@ Result<PatchPlan> GenshinAdapter::build_patch_plan(const PatchContext& context) 
         return std::unexpected(Error::make(
             ErrorCode::SignatureNotFound,
             "no Genshin fps signature resolved; game version likely unsupported "
-            "(run `hoyoflux doctor`)"));
+            "(set launcher.action = \"diagnose\" and double-click HoyoFlux)"));
     }
     plan.operations.push_back(PatchOperation::redirect_relative(
         fps->fields[0], PatchTargetSymbol::RemoteStateFps, 0));
@@ -260,7 +260,7 @@ Result<PatchPlan> GenshinAdapter::build_patch_plan(const PatchContext& context) 
             return std::unexpected(Error::make(
                 ErrorCode::SignatureNotFound,
                 "custom dpi requested but the genshin.dpi signature did not "
-                "resolve (run `hoyoflux doctor`)"));
+                "resolve (set launcher.action = \"diagnose\" and double-click HoyoFlux)"));
         }
         const float dpi_pixels = *context.profile.ui.dpi_scale * 96.0f;
         std::array<std::byte, 16> prologue{};

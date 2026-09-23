@@ -143,7 +143,7 @@ Result<RecoveryAction> SessionEngine::recover(SessionLease& lease) {
         return std::unexpected(
             Error::make(ErrorCode::InvalidArgument, "recover requires a session lease"));
     }
-    auto journal = load_journal();
+    auto journal = load_journal(config_.journal_path);
     if (!journal) {
         return std::unexpected(journal.error());
     }
@@ -151,14 +151,21 @@ Result<RecoveryAction> SessionEngine::recover(SessionLease& lease) {
         return RecoveryAction::None;
     }
     const ActiveSessionJournal& stale = **journal;
-    if (stale.pid != 0 && win32::is_process_running(stale.pid)) {
-        // Something under that pid is alive: never touch a running game.
-        // `hoyoflux recover` reports this so the user can decide.
-        return RecoveryAction::GameStillRunning;
+    if (stale.pid != 0) {
+        const auto liveness = win32::inspect_process_liveness(stale.pid);
+        if (liveness == win32::ProcessLiveness::Running) {
+            // Something under that pid is alive: never touch a running game.
+            return RecoveryAction::GameStillRunning;
+        }
+        if (liveness == win32::ProcessLiveness::Unknown) {
+            return std::unexpected(Error::make(
+                ErrorCode::SessionAlreadyActive,
+                "cannot confirm whether the journal game process has exited"));
+        }
     }
 
     // Plan §10.2 order: game persistent state first, then physical displays.
-    Error failure{ErrorCode::None, ""};
+    Error failure{};
     bool failed = false;
 
     if (stale.rollback.persistent_state.has_value()) {
@@ -195,7 +202,7 @@ Result<RecoveryAction> SessionEngine::recover(SessionLease& lease) {
         }
     }
 
-    if (auto cleared = clear_journal(); !cleared) {
+    if (auto cleared = clear_journal(config_.journal_path); !cleared) {
         return std::unexpected(cleared.error());
     }
     return RecoveryAction::Recovered;
@@ -303,7 +310,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
     // v1 never changes the Windows physical display mode. Rollback records
     // only state HoyoFlux actually modified, so this remains empty until a
     // future ApplyDisplayMode path records its own successful changes.
-    if (auto saved = save_journal(journal); !saved) {
+    if (auto saved = save_journal(config_.journal_path, journal); !saved) {
         return std::unexpected(saved.error());
     }
 
@@ -392,7 +399,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
             }
         }
         journal.stage = SessionStage::Failed;
-        if (auto saved = save_journal(journal); !saved) {
+        if (auto saved = save_journal(config_.journal_path, journal); !saved) {
             record_cleanup_error(saved.error());
         }
         if (!game_dead) {
@@ -420,7 +427,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
                     cleanup_error.message + "; recovery journal retained",
                 cleanup_error.os_code));
         }
-        if (auto cleared = clear_journal(); !cleared) {
+        if (auto cleared = clear_journal(config_.journal_path); !cleared) {
             context.stage = SessionStage::Failed;
             return std::unexpected(cleared.error());
         }
@@ -435,10 +442,10 @@ Result<SessionContext> SessionEngine::run_after_preflight(
     auto launch_plan = adapter_.build_launch_plan(*install, request);
     if (!launch_plan) {
         journal.stage = SessionStage::Failed;
-        if (auto saved = save_journal(journal); !saved) {
+        if (auto saved = save_journal(config_.journal_path, journal); !saved) {
             return std::unexpected(saved.error());
         }
-        if (auto cleared = clear_journal(); !cleared) {
+        if (auto cleared = clear_journal(config_.journal_path); !cleared) {
             return std::unexpected(cleared.error());
         }
         return std::unexpected(launch_plan.error());
@@ -449,10 +456,10 @@ Result<SessionContext> SessionEngine::run_after_preflight(
                                priority_class(launch_plan->priority));
     if (!launched) {
         journal.stage = SessionStage::Failed;
-        if (auto saved = save_journal(journal); !saved) {
+        if (auto saved = save_journal(config_.journal_path, journal); !saved) {
             return std::unexpected(saved.error());
         }
-        if (auto cleared = clear_journal(); !cleared) {
+        if (auto cleared = clear_journal(config_.journal_path); !cleared) {
             return std::unexpected(cleared.error());
         }
         return std::unexpected(launched.error());
@@ -460,7 +467,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
     context.pid = launched->pid;
     journal.pid = launched->pid;
     journal.stage = SessionStage::Resolving;
-    if (auto saved = save_journal(journal); !saved) {
+    if (auto saved = save_journal(config_.journal_path, journal); !saved) {
         return finish_failed({&*launched, nullptr, false, saved.error()});
     }
 
@@ -520,7 +527,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
     context.stage = SessionStage::Patching;
     journal.stage = SessionStage::Patching;
     journal.rollback.required = true;
-    if (auto saved = save_journal(journal); !saved) {
+    if (auto saved = save_journal(config_.journal_path, journal); !saved) {
         return finish_failed({&*launched, nullptr, game_has_run, saved.error()});
     }
 
@@ -577,7 +584,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
     // persistent/display state still has to survive a launcher crash (Test D).
     context.stage = SessionStage::Running;
     journal.stage = SessionStage::Running;
-    if (auto saved = save_journal(journal); !saved) {
+    if (auto saved = save_journal(config_.journal_path, journal); !saved) {
         return finish_failed({&*launched, &applied, false, saved.error()});
     }
 
@@ -748,7 +755,7 @@ Result<SessionContext> SessionEngine::run_after_preflight(
         context.stage = SessionStage::Failed;
         return std::unexpected(restored.error());
     }
-    if (auto cleared = clear_journal(); !cleared) {
+    if (auto cleared = clear_journal(config_.journal_path); !cleared) {
         context.stage = SessionStage::Failed;
         return std::unexpected(cleared.error());
     }

@@ -178,7 +178,7 @@ Result<PatchPlan> StarRailAdapter::build_patch_plan(const PatchContext& context)
         return std::unexpected(Error::make(
             ErrorCode::SignatureNotFound,
             "the starrail.fps signature did not resolve; game version likely "
-            "unsupported (run `hoyoflux doctor`)"));
+            "unsupported (set launcher.action = \"diagnose\" and double-click HoyoFlux)"));
     }
     plan.operations.push_back(
         PatchOperation::write_u32(fps->fields[0], context.profile.runtime.fps));

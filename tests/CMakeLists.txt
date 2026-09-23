@@ -63,7 +63,11 @@ target_link_libraries(profile_test PRIVATE hoyoflux_domain hoyoflux_platform_win
                       hoyoflux_profile Catch2::Catch2WithMain)
 add_test(NAME profile_test COMMAND profile_test)
 
-add_executable(app_test app_test.cpp ../src/app/launch_service.cpp)
+add_executable(app_test app_test.cpp ../src/app/launch_service.cpp
+                        ../src/app/app_paths.cpp
+                        ../src/app/doctor.cpp
+                        ../src/app/portable_migration.cpp)
+target_include_directories(app_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(app_test PRIVATE hoyoflux_domain hoyoflux_platform_win32
-                      hoyoflux_profile hoyoflux_session Catch2::Catch2WithMain)
+                      hoyoflux_profile hoyoflux_session ole32 Catch2::Catch2WithMain)
 add_test(NAME app_test COMMAND app_test)

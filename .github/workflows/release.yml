@@ -34,7 +34,19 @@ jobs:
         run: cmake --build --preset release
 
       - name: Test (release)
-        run: ctest --preset release
+        run: ctest --preset release --output-on-failure -j 1
+
+      - name: Verify configuration-driven launch contract
+        shell: pwsh
+        run: |
+          & .\build\release\tests\app_test.exe '[app][config]'
+          if ($LASTEXITCODE -ne 0) { throw 'configuration-driven launch contract failed' }
+
+      - name: Verify release-audit failure cases
+        shell: pwsh
+        run: |
+          & .\tools\release_audit.ps1 -Exe .\build\release\src\app\hoyoflux.exe -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw 'release audit self-test failed' }
 
       - name: Verify configured version matches tag
         shell: pwsh
@@ -57,42 +69,8 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item build/release/src/app/hoyoflux.exe "dist/hoyoflux-$version.exe"
-          Copy-Item build/release/src/app/hoyoflux.exe dist/hoyoflux.exe
-          Copy-Item src/app/hoyoflux-cli.cmd dist/
-          Copy-Item config.example.toml, README.md, LICENSE, THIRD_PARTY_NOTICES.md, docs/compatibility-matrix.md dist/
-
-          # llvm-mingw uses two non-system runtime DLLs for this executable.
-          # Keep them beside the EXE so the ZIP is runnable from an empty dir.
-          $toolchainBin = Split-Path (Get-Command clang.exe).Source
-          foreach ($runtime in @('libc++.dll', 'libunwind.dll')) {
-            $runtimePath = Join-Path $toolchainBin $runtime
-            if (-not (Test-Path $runtimePath)) {
-              throw "missing toolchain runtime '$runtimePath'"
-            }
-            Copy-Item $runtimePath (Join-Path dist $runtime)
-          }
-
-          $exeHash = (Get-FileHash "dist/hoyoflux-$version.exe" -Algorithm SHA256).Hash
-          "$exeHash  hoyoflux-$version.exe" | Out-File -Encoding ascii "dist/SHA256SUMS.txt"
-
-          $objdump = (Get-Command llvm-objdump.exe).Source
-          $imports = & $objdump -p "dist/hoyoflux-$version.exe" |
-            Select-String 'DLL Name:' |
-            ForEach-Object { ($_ -replace '^\s*DLL Name:\s*', '').Trim() }
-          $systemDlls = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-          foreach ($systemDll in @('kernel32.dll', 'user32.dll', 'shell32.dll', 'ole32.dll', 'advapi32.dll')) {
-            [void]$systemDlls.Add($systemDll)
-          }
-          foreach ($import in $imports) {
-            if ($systemDlls.Contains($import) -or $import.StartsWith('api-ms-win-', [StringComparison]::OrdinalIgnoreCase) -or $import.StartsWith('ext-ms-win-', [StringComparison]::OrdinalIgnoreCase)) {
-              continue
-            }
-            if (-not (Test-Path (Join-Path dist $import))) {
-              throw "non-system import '$import' is not packaged"
-            }
-          }
+          & .\tools\release_audit.ps1 -Exe .\build\release\src\app\hoyoflux.exe -PackageDirectory dist
+          if ($LASTEXITCODE -ne 0) { throw 'release artifact audit failed' }
 
           Compress-Archive -Path dist/* -DestinationPath "dist/hoyoflux-$version-windows-x64.zip"
           $zipHash = (Get-FileHash "dist/hoyoflux-$version-windows-x64.zip" -Algorithm SHA256).Hash
@@ -105,13 +83,51 @@ jobs:
           if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
           New-Item -ItemType Directory -Force -Path $smoke | Out-Null
           Expand-Archive -Path "dist/hoyoflux-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.zip" -DestinationPath $smoke
-          $env:HOYOFLUX_STATE_DIR = Join-Path $smoke 'state'
-          & (Join-Path $smoke 'hoyoflux-cli.cmd') version
-          if ($LASTEXITCODE -ne 0) { throw 'clean-package version smoke failed' }
-          & (Join-Path $smoke 'hoyoflux-cli.cmd') doctor
-          if ($LASTEXITCODE -ne 0) { throw 'clean-package doctor smoke failed' }
-          & (Join-Path $smoke 'hoyoflux-cli.cmd') profile match genshin
-          if ($LASTEXITCODE -ne 0) { throw 'clean-package profile match smoke failed' }
+          $executables = @(Get-ChildItem $smoke -Recurse -File -Filter *.exe)
+          if ($executables.Count -ne 1 -or $executables[0].Name -ne 'hoyoflux.exe') {
+            throw 'package must contain exactly one hoyoflux.exe'
+          }
+          if (@(Get-ChildItem $smoke -Recurse -File -Filter *.dll).Count -ne 0) {
+            throw 'portable package must not contain runtime DLLs'
+          }
+          if (Test-Path (Join-Path $smoke 'config.toml')) {
+            throw 'package must allow the EXE to create first-run config.toml'
+          }
+          foreach ($required in @('README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'config.example.toml', 'docs/compatibility-matrix.md', 'docs/persistent-state-experiment.md', 'assets/hoyoflux.ico')) {
+            if (-not (Test-Path (Join-Path $smoke $required))) { throw "package is missing $required" }
+          }
+
+      - name: Clean-package executable smoke
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'hoyoflux-exe-smoke-中文 路径'
+          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          Expand-Archive -Path "dist/hoyoflux-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.zip" -DestinationPath $smoke
+          $exe = Join-Path $smoke 'hoyoflux.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'release ZIP does not contain hoyoflux.exe at its root' }
+          $legacy = Join-Path $env:LOCALAPPDATA 'HoyoFlux'
+          if (Test-Path $legacy) { throw 'clean runner unexpectedly already contains legacy HoyoFlux AppData' }
+          $oldPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32"
+            Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP -Wait
+            if (-not (Test-Path (Join-Path $smoke 'config.toml'))) { throw 'first EXE launch did not create config.toml beside the EXE' }
+            $config = Get-Content (Join-Path $smoke 'config.toml') -Raw
+            $config = $config -replace 'action = "launch"', 'action = "diagnose"'
+            Set-Content -LiteralPath (Join-Path $smoke 'config.toml') -Value $config -Encoding utf8
+            Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP -Wait
+            $reportPath = Join-Path $smoke 'data/diagnostics.txt'
+            if (-not (Test-Path $reportPath)) { throw 'diagnose EXE launch did not write diagnostics.txt' }
+            $report = Get-Content -LiteralPath $reportPath -Raw
+            $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
+            if ($report -notmatch [regex]::Escape("HoyoFlux 诊断报告 $expectedVersion")) {
+              throw "diagnostic report version does not match $expectedVersion"
+            }
+            if (Test-Path $legacy) { throw 'EXE launch created AppData state' }
+          } finally {
+            $env:PATH = $oldPath
+          }
 
       - name: Publish release
         shell: pwsh

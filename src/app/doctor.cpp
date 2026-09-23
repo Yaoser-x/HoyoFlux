@@ -1,297 +1,249 @@
-// Doctor implementation (F12, plan section 21): locate each game, read its
-// version, resolve signatures live when the game happens to be running, and
-// report the F0 capability model. Read-only: no patching, no spawning, no
-// state changes.
+// Read-only diagnostic report collection.  Report generation intentionally
+// shares no configuration migration or session-recovery path with launch.
 
 #include "app/doctor.hpp"
 
-#include "domain/capability.hpp"
-#include "domain/profile.hpp"
 #include "game/game_adapter.hpp"
 #include "platform/win32/display.hpp"
-#include "platform/win32/pe.hpp"
+#include "platform/win32/file.hpp"
 #include "platform/win32/privilege.hpp"
 #include "platform/win32/process.hpp"
-#include "platform/win32/registry.hpp"
 #include "platform/win32/text.hpp"
 #include "profile/config.hpp"
-#include "scan/module_snapshot.hpp"
 #include "session/journal.hpp"
 #include "version.hpp"
 
-#include <CLI/CLI.hpp>
-
 #include <windows.h>
 
-#include <cstdio>
 #include <filesystem>
 #include <iomanip>
-#include <iostream>
+#include <sstream>
 #include <string>
-#include <vector>
+#include <utility>
 
 namespace hoyoflux::app {
 namespace {
 
-using namespace hoyoflux;
+enum class CheckStatus { Ok, Warn, Unchecked, Fail };
 
-// The CLI config lives next to the state directory the journal owns.
-std::filesystem::path config_path() {
-    return session::journal_path().parent_path().parent_path() / "config.toml";
-}
-
-int g_failures = 0;
-
-enum class CheckStatus { Ok, Warn, Skip, Fail };
-
-std::string_view status_label(CheckStatus status) {
+std::string_view label(CheckStatus status) {
     switch (status) {
-    case CheckStatus::Ok:
-        return "[ OK ] ";
-    case CheckStatus::Warn:
-        return "[WARN] ";
-    case CheckStatus::Skip:
-        return "[SKIP] ";
-    case CheckStatus::Fail:
-        return "[FAIL] ";
+    case CheckStatus::Ok: return "[通过] ";
+    case CheckStatus::Warn: return "[注意] ";
+    case CheckStatus::Unchecked: return "[未检查] ";
+    case CheckStatus::Fail: return "[失败] ";
     }
-    return "[FAIL] ";
+    return "[失败] ";
 }
 
-void report(CheckStatus status, std::string_view label,
-            std::string_view detail) {
-    std::cout << status_label(status) << label;
-    if (!detail.empty()) {
-        std::cout << ": " << detail;
+class ReportBuilder {
+public:
+    void section(std::string_view name) { output_ << "\n" << name << "\n"; }
+    void item(CheckStatus status, std::string_view name, std::string_view detail) {
+        output_ << label(status) << name;
+        if (!detail.empty()) output_ << ": " << detail;
+        output_ << "\n";
+        if (status == CheckStatus::Fail) ++failures_;
     }
-    std::cout << "\n";
-    if (status == CheckStatus::Fail) {
-        ++g_failures;
-    }
+    void line(std::string_view value) { output_ << value << "\n"; }
+    [[nodiscard]] std::string finish() && { return std::move(output_).str(); }
+    [[nodiscard]] int failures() const noexcept { return failures_; }
+
+private:
+    std::ostringstream output_;
+    int failures_{0};
+};
+
+std::string path_utf8(const std::filesystem::path& path) {
+    return win32::utf8(path.wstring());
 }
 
-void check(bool ok, std::string_view label, std::string_view detail) {
-    report(ok ? CheckStatus::Ok : CheckStatus::Fail, label, detail);
+void report_system(ReportBuilder& report) {
+    report.item(win32::is_elevated() ? CheckStatus::Ok : CheckStatus::Warn,
+                "管理员权限",
+                win32::is_elevated() ? "当前进程已提权" :
+                    "诊断无需提权；正常启动时才会请求 UAC");
 }
 
-void check_system() {
-    OSVERSIONINFOEXW info{};
-    info.dwOSVersionInfoSize = sizeof(info);
-    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
-    const auto rtl_get_version = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(
-        GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
-    char windows_detail[64] = "unknown";
-    if (rtl_get_version && rtl_get_version(&info) == 0) {
-        std::snprintf(windows_detail, sizeof(windows_detail), "%lu.%lu.%lu",
-                      info.dwMajorVersion, info.dwMinorVersion,
-                      info.dwBuildNumber);
+void report_config(ReportBuilder& report, const AppPaths& paths,
+                   const DiagnosticContext& context) {
+    if (context.error) {
+        report.item(CheckStatus::Fail, "本次错误", context.error->message);
     }
-    check(info.dwMajorVersion >= 10, "Windows", windows_detail);
-    if (win32::is_elevated()) {
-        report(CheckStatus::Ok, "Administrator", "elevated");
-    } else {
-        report(CheckStatus::Warn, "Administrator",
-               "not elevated; launch will request UAC when needed");
+    if (context.config) {
+        report.item(CheckStatus::Ok, "config.toml",
+                    std::to_string(context.config->profiles.size()) +
+                        " 个配置档；只读检查结果由启动端提供");
+        return;
     }
-}
-
-void check_config() {
-    auto config = profile::load_config(config_path());
+    auto config = profile::read_config(paths.config);
     if (config) {
-        check(true, "config.toml",
-              std::to_string(config->profiles.size()) + " profiles at " +
-                  config_path().string());
+        report.item(CheckStatus::Ok, "config.toml",
+                    std::to_string(config->profiles.size()) + " 个配置档");
     } else {
-        check(false, "config.toml", config.error().message);
+        report.item(CheckStatus::Fail, "config.toml", config.error().message);
     }
 }
 
-void check_journal() {
-    auto journal = session::load_journal();
+void report_journal(ReportBuilder& report, const std::filesystem::path& path,
+                    std::string_view name) {
+    auto journal = session::load_journal(path);
     if (!journal) {
-        check(false, "journal", journal.error().message);
+        report.item(CheckStatus::Fail, name, journal.error().message);
     } else if (!journal->has_value()) {
-        check(true, "journal", "none (clean)");
+        report.item(CheckStatus::Ok, name, "不存在");
     } else {
         const auto& active = **journal;
-        const bool alive =
-            active.pid != 0 && win32::is_process_running(active.pid);
-        check(!alive, "journal",
-              alive ? "ACTIVE session=" + active.session_id +
-                          " pid=" + std::to_string(active.pid)
-                    : "stale journal present - run `hoyoflux recover`");
+        const auto state = win32::inspect_process_liveness(active.pid);
+        if (state == win32::ProcessLiveness::Running) {
+            report.item(CheckStatus::Warn, name,
+                        "关联游戏仍在运行，恢复不会执行");
+        } else if (state == win32::ProcessLiveness::Unknown) {
+            report.item(CheckStatus::Warn, name,
+                        "无法确认关联游戏状态，恢复会停止以保护数据");
+        } else {
+            report.item(CheckStatus::Warn, name,
+                        "存在可恢复记录，正常启动时将先执行恢复");
+        }
     }
 }
 
-void check_displays() {
-    if (auto displays = win32::enumerate_displays(); displays) {
-        std::string summary;
-        for (const auto& display : *displays) {
-            if (!display.is_attached) {
-                continue;
-            }
-            auto settings = win32::query_current_settings(display.device_name);
-            if (settings) {
-                summary += std::filesystem::path(display.device_name).string() +
-                           " " + std::to_string(settings->width) + "x" +
-                           std::to_string(settings->height) + "@" +
-                           std::to_string(settings->refresh_rate) + "  ";
-            }
-        }
-        check(true, "displays", summary);
-    } else {
-        check(false, "displays", displays.error().message);
+void report_migration(ReportBuilder& report, const AppPaths& paths,
+                      const DiagnosticContext& context) {
+    if (!context.migration_state.empty()) {
+        report.item(CheckStatus::Warn, "迁移状态", context.migration_state);
+        return;
     }
+    std::error_code ec;
+    if (!std::filesystem::exists(paths.migration_record, ec)) {
+        report.item(ec ? CheckStatus::Unchecked : CheckStatus::Ok, "迁移状态",
+                    ec ? ec.message() : "无待处理迁移");
+        return;
+    }
+    auto record = win32::read_file_bytes(paths.migration_record);
+    report.item(record ? CheckStatus::Warn : CheckStatus::Fail, "迁移状态",
+                record ? "发现待处理迁移记录，下一次正常启动会安全续接" :
+                         record.error().message);
 }
 
-// Per game: install, version, persistent roots, capabilities, and - when the
-// game is currently running - live signature resolution.
-void check_game(GameId game) {
-    auto adapter = game::make_adapter(game);
-    const std::string game_name = std::string(to_string(game));
-
-    auto install = adapter->locate_installation(game::Region::Auto);
-    if (!install) {
-        if (install.error().code == ErrorCode::ProcessNotFound) {
-            auto launcher_paths = win32::read_launcher_paths();
-            if (!launcher_paths) {
-                check(false, game_name, launcher_paths.error().message);
-            } else {
-                const bool registered = game == GameId::Genshin
-                                            ? launcher_paths->genshin_registered
-                                            : launcher_paths->starrail_registered;
-                if (registered) {
-                    check(false, game_name,
-                          "launcher registry points to a missing executable");
-                } else {
-                    report(CheckStatus::Skip, game_name, "not installed");
-                }
-            }
-        } else {
-            check(false, game_name, install.error().message);
-        }
+void report_displays(ReportBuilder& report) {
+    auto displays = win32::enumerate_displays();
+    if (!displays) {
+        report.item(CheckStatus::Fail, "显示器", displays.error().message);
         return;
     }
-    check(true, game_name, install->exe_path.string() +
-                               (install->is_cn ? " (CN)" : " (Global)"));
-
-    auto old_version = adapter->is_old_version(*install);
-    if (old_version) {
-        check(true, game_name + " version",
-              *old_version ? "old (engine in UnityPlayer.dll)"
-                           : "modern (merged exe)");
-    } else {
-        check(false, game_name + " version", old_version.error().message);
-    }
-
-    // Persistent-state roots (read-only existence + value counts).
-    for (const auto& root : adapter->persistent_state_roots()) {
-        auto exists = win32::registry_key_exists(root);
-        if (exists && *exists) {
-            auto values = win32::read_registry_values(root);
-            size_t screenmanager = 0;
-            if (values) {
-                for (const auto& value : *values) {
-                    if (value.name.rfind(L"Screenmanager", 0) == 0) {
-                        ++screenmanager;
-                    }
-                }
-            }
-            std::cout << "       root HKCU\\" << win32::utf8(root)
-                      << ": " << screenmanager << " Screenmanager value(s)\n";
-        } else {
-            std::cout << "       root HKCU\\"
-                      << win32::utf8(root) << ": absent\n";
-        }
-    }
-
-    // Capability report (F0 model, probe profile = fps only).
-    const Profile probe;
-    const auto report = adapter->capabilities(*install, probe);
-    std::cout << "     capabilities:\n";
-    for (const auto& entry : report.entries) {
-        std::cout << "       " << std::left << std::setw(24) << to_string(entry.capability)
-                  << to_string(entry.status);
-        if (!entry.reason.empty() &&
-            entry.status == CapabilityStatus::Unsupported) {
-            std::cout << " - " << entry.reason;
-        }
-        std::cout << "\n";
-    }
-
-    // Live signature freshness: only possible when the game is running
-    // (doctor never spawns or suspends anything).
-    const auto exe_name = install->exe_path.filename().wstring();
-    auto running = win32::find_process(exe_name);
-    if (!running || !running->has_value()) {
-        std::cout << "     signatures: game not running - live resolution "
-                     "happens per launch (run `hoyoflux launch --verbose`)\n";
-        return;
-    }
-    std::cout << "     signatures (live, pid " << (*running)->pid << "):\n";
-    auto process =
-        win32::open_process((*running)->pid, PROCESS_VM_READ | PROCESS_QUERY_INFORMATION);
-    if (!process) {
-        std::cout << "       cannot open the game process read-only\n";
-        return;
-    }
-    auto requirements = adapter->module_requirements(*install, probe);
-    if (!requirements) {
-        std::cout << "       module requirements unavailable\n";
-        return;
-    }
-    std::vector<scan::ModuleSnapshot> snapshots;
-    for (const auto& requirement : requirements->modules) {
-        auto base = requirement.module.empty()
-                        ? scan::remote_module_base(*process)
-                        : scan::remote_module_base(*process, requirement.module);
-        if (!base) {
-            std::cout << "       module not found: "
-                      << (requirement.module.empty() ? "<main>"
-                                                     : requirement.module)
-                      << "\n";
+    std::string summary;
+    for (const auto& display : *displays) {
+        if (!display.is_attached) continue;
+        auto settings = win32::query_current_settings(display.device_name);
+        if (!settings) {
+            summary += path_utf8(display.device_name) + "（权限不足或无法读取） ";
             continue;
         }
-        std::vector<std::string_view> sections(requirement.sections.begin(),
-                                               requirement.sections.end());
-        auto snapshot = scan::snapshot_module(*process, *base, sections);
-        if (snapshot) {
-            snapshots.push_back(std::move(*snapshot));
-        }
+        summary += path_utf8(display.device_name) + " " +
+            std::to_string(settings->width) + "x" +
+            std::to_string(settings->height) + "@" +
+            std::to_string(settings->refresh_rate) + " ";
     }
-    auto resolved = adapter->resolve_signatures(snapshots);
-    if (!resolved) {
-        std::cout << "       resolution failed: " << resolved.error().message
-                  << "\n";
-        ++g_failures;
+    report.item(CheckStatus::Ok, "显示器", summary.empty() ? "未检测到已连接显示器" : summary);
+}
+
+void report_selection(ReportBuilder& report, const AppPaths& paths,
+                      const DiagnosticContext& context) {
+    const profile::Config* config = context.config ? &*context.config : nullptr;
+    std::optional<profile::Config> local;
+    if (!config) {
+        auto read = profile::read_config(paths.config);
+        if (!read) {
+            report.item(CheckStatus::Unchecked, "配置选择", "配置无法读取");
+            return;
+        }
+        local = std::move(*read);
+        config = &*local;
+    }
+    if (config->launcher.profile != "auto") {
+        report.item(CheckStatus::Ok, "配置选择",
+                    "手动配置档：" + config->launcher.profile +
+                        "（不会推演 Auto 匹配）");
         return;
     }
-    for (const auto& entry : *resolved) {
-        check(entry.resolved, game_name + " sig " + std::string(entry.id),
-              entry.resolved ? "resolved" : "MISSING for this game version");
+    auto displays = win32::enumerate_displays();
+    if (!displays) {
+        report.item(CheckStatus::Fail, "Auto 选择", displays.error().message);
+        return;
+    }
+    auto decision = profile::resolve_auto_profile(
+        *config, config->launcher.game, *displays);
+    if (!decision) {
+        report.item(CheckStatus::Fail, "Auto 选择", decision.error().message);
+        return;
+    }
+    report.item(CheckStatus::Ok, "Auto 选择",
+                decision->profile.id + (decision->used_fallback ? "（回退）" : "（显示器匹配）"));
+    for (const auto& candidate : decision->candidates) {
+        report.line("  候选 " + candidate.profile_id + "：特异度=" +
+                    std::to_string(candidate.specificity) + "，优先级=" +
+                    std::to_string(candidate.priority));
+    }
+}
+
+void report_games(ReportBuilder& report) {
+    for (const GameId game : {GameId::Genshin, GameId::StarRail}) {
+        auto adapter = game::make_adapter(game);
+        const std::string game_name = std::string(to_string(game));
+        auto install = adapter->locate_installation(game::Region::Auto);
+        if (!install) {
+            report.item(install.error().code == ErrorCode::ProcessNotFound
+                            ? CheckStatus::Unchecked : CheckStatus::Warn,
+                        game_name, install.error().message);
+            continue;
+        }
+        report.item(CheckStatus::Ok, game_name, path_utf8(install->exe_path));
+        const Profile probe;
+        const auto capabilities = adapter->capabilities(*install, probe);
+        for (const auto& entry : capabilities.entries) {
+            report.line("  能力 " + std::string(to_string(entry.capability)) + "：" +
+                        std::string(to_string(entry.status)) +
+                        (entry.reason.empty() ? "" : "（" + entry.reason + "）"));
+        }
     }
 }
 
 }  // namespace
 
-int run_doctor(bool /*verbose*/) {
-    g_failures = 0;
-    std::cout << "HoyoFlux Doctor " << HOYOFLUX_VERSION_STRING << "\n\n";
+Result<std::string> build_diagnostic_report(const AppPaths& paths,
+                                            const DiagnosticContext& context) {
+    ReportBuilder report;
+    report.line("HoyoFlux 诊断报告 " HOYOFLUX_VERSION_STRING);
+    report.line("此报告只读：不会迁移文件、恢复会话、修改游戏设置或请求管理员权限。\n");
+    report.section("路径");
+    report.item(CheckStatus::Ok, "可执行文件", path_utf8(paths.executable));
+    report.item(CheckStatus::Ok, "配置", path_utf8(paths.config));
+    report.item(CheckStatus::Ok, "数据目录", path_utf8(paths.data));
+    report.section("系统");
+    report_system(report);
+    report.section("配置和状态");
+    report_config(report, paths, context);
+    report_migration(report, paths, context);
+    report_journal(report, paths.journal, "本地恢复记录");
+    report_displays(report);
+    report_selection(report, paths, context);
+    if (context.full) {
+        report.section("游戏与能力");
+        report_games(report);
+    } else {
+        report.section("游戏与能力");
+        report.item(CheckStatus::Unchecked, "深入扫描", "失败诊断未扫描游戏进程");
+    }
+    report.line("\n报告中的失败项不改变任何文件；修复配置后请再次双击 HoyoFlux。");
+    return std::move(report).finish();
+}
 
-    std::cout << "System\n";
-    check_system();
-
-    std::cout << "\nGames\n";
-    check_game(GameId::Genshin);
-    check_game(GameId::StarRail);
-
-    std::cout << "\nState\n";
-    check_config();
-    check_journal();
-    check_displays();
-
-    std::cout << "\nDoctor is read-only: it never patches a game.\n";
-    return g_failures == 0 ? 0 : 1;
+Result<void> write_diagnostic_report(const AppPaths& paths,
+                                     const DiagnosticContext& context) {
+    auto report = build_diagnostic_report(paths, context);
+    if (!report) return std::unexpected(report.error());
+    return win32::write_file_atomic(paths.diagnostics, *report);
 }
 
 }  // namespace hoyoflux::app
