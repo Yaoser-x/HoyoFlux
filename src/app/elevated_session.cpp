@@ -462,14 +462,16 @@ Result<int> run_elevated_session_child(const AppPaths& paths,
     }
     auto bytes = win32::read_file_bytes(paths.config);
     if (!bytes) {
-        send_child_result(pipe, 1, bytes.error().message);
+        // Best effort: if the pipe is already broken, closing it below lets
+        // the parent surface the transport error while this process exits.
+        (void)send_child_result(pipe, 1, bytes.error().message);
         close_pipe();
         return std::unexpected(bytes.error());
     }
     auto hash = win32::sha256_hex(*bytes);
     if (!hash || *hash != approval->substr(kConfigPrefix.size())) {
         const std::string detail = "配置在提权期间发生变化，请重新双击 HoyoFlux。";
-        send_child_result(pipe, 1, detail);
+        (void)send_child_result(pipe, 1, detail);
         close_pipe();
         return std::unexpected(Error::make(ErrorCode::ConfigParseFailed, detail));
     }
@@ -478,7 +480,7 @@ Result<int> run_elevated_session_child(const AppPaths& paths,
         config->launcher.action != profile::LauncherAction::Launch) {
         const std::string detail = !config ? config.error().message :
             "提升后的配置已不再是可启动的 schema 2 配置";
-        send_child_result(pipe, 1, detail);
+        (void)send_child_result(pipe, 1, detail);
         close_pipe();
         return std::unexpected(Error::make(ErrorCode::ConfigParseFailed, detail));
     }
@@ -488,7 +490,7 @@ Result<int> run_elevated_session_child(const AppPaths& paths,
     }
     auto run = run_session_without_ui(paths, *config);
     if (!run) {
-        send_child_result(pipe, 1, run.error().message);
+        (void)send_child_result(pipe, 1, run.error().message);
         close_pipe();
         return std::unexpected(run.error());
     }
