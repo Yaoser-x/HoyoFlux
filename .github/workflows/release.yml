@@ -109,16 +109,40 @@ jobs:
           $legacy = Join-Path $env:LOCALAPPDATA 'HoyoFlux'
           if (Test-Path $legacy) { throw 'clean runner unexpectedly already contains legacy HoyoFlux AppData' }
           $oldPath = $env:PATH
+          $runnerIsAdministrator = [Security.Principal.WindowsPrincipal]::new(
+            [Security.Principal.WindowsIdentity]::GetCurrent()
+          ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Output "Smoke runner is in Administrators group: $runnerIsAdministrator"
           try {
             $env:PATH = "$env:SystemRoot\System32"
-            Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP -Wait
-            if (-not (Test-Path (Join-Path $smoke 'config.toml'))) { throw 'first EXE launch did not create config.toml beside the EXE' }
+            $firstRun = Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP `
+              -PassThru -Wait
+            $configPath = Join-Path $smoke 'config.toml'
+            for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path $configPath); $attempt++) {
+              Start-Sleep -Seconds 1
+            }
+            if (-not (Test-Path $configPath)) {
+              $firstRunReport = Join-Path $smoke 'data/diagnostics.txt'
+              $details = if (Test-Path $firstRunReport) {
+                Get-Content -LiteralPath $firstRunReport -Raw
+              } else {
+                'No first-run diagnostic report was written.'
+              }
+              throw "first EXE launch did not create config.toml (runner administrator=$runnerIsAdministrator, exit code=$($firstRun.ExitCode)): $details"
+            }
             $config = Get-Content (Join-Path $smoke 'config.toml') -Raw
             $config = $config -replace 'action = "launch"', 'action = "diagnose"'
             Set-Content -LiteralPath (Join-Path $smoke 'config.toml') -Value $config -Encoding utf8
-            Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP -Wait
             $reportPath = Join-Path $smoke 'data/diagnostics.txt'
-            if (-not (Test-Path $reportPath)) { throw 'diagnose EXE launch did not write diagnostics.txt' }
+            $null = Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
+            $diagnoseRun = Start-Process -FilePath $exe -WorkingDirectory $env:RUNNER_TEMP `
+              -PassThru -Wait
+            for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path $reportPath); $attempt++) {
+              Start-Sleep -Seconds 1
+            }
+            if (-not (Test-Path $reportPath)) {
+              throw "diagnose EXE launch did not write diagnostics.txt (runner administrator=$runnerIsAdministrator, exit code=$($diagnoseRun.ExitCode))"
+            }
             $report = Get-Content -LiteralPath $reportPath -Raw
             $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
             if ($report -notmatch [regex]::Escape("HoyoFlux 诊断报告 $expectedVersion")) {
