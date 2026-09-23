@@ -79,11 +79,17 @@ Result<int> relaunch_elevated_and_wait(
         if (!handshake) handshake_error = handshake.error();
     }
     // The child cannot begin a game session before the parent has delivered
-    // the validated configuration digest over the private pipe.  If that
-    // handshake fails, leaving it alive would make the ordinary launcher
-    // block forever on a child that is waiting for data we will never send.
+    // the validated configuration digest over the private pipe. On failure,
+    // terminate it promptly; the parent also closes the pipe during unwind so
+    // an unconfirmed child exits its bounded handshake instead of waiting on
+    // data that will never arrive.
     if (handshake_error) {
-        terminate_and_wait(child, kHandshakeAbortWaitMs);
+        auto terminated = terminate_and_wait(child, kHandshakeAbortWaitMs);
+        if (!terminated &&
+            inspect_process_liveness(GetProcessId(child.get())) != ProcessLiveness::Exited) {
+            handshake_error->message += "; 无法确认提权子进程已退出: " +
+                                        terminated.error().message;
+        }
         return std::unexpected(std::move(*handshake_error));
     }
     if (WaitForSingleObject(child.get(), INFINITE) == WAIT_FAILED) {
