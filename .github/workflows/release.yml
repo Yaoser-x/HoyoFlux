@@ -100,70 +100,10 @@ jobs:
       - name: Clean-package executable smoke
         shell: pwsh
         run: |
-          # SAFER's normal-user token needs a location writable inside the runner user's profile.
-          $smoke = Join-Path $env:LOCALAPPDATA 'Temp\hoyoflux-exe-smoke-中文 路径'
-          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
-          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
-          Expand-Archive -Path "dist/hoyoflux-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.zip" -DestinationPath $smoke
-          $exe = Join-Path $smoke 'hoyoflux.exe'
-          if (-not (Test-Path -LiteralPath $exe)) { throw 'release ZIP does not contain hoyoflux.exe at its root' }
-          $legacy = Join-Path $env:LOCALAPPDATA 'HoyoFlux'
-          if (Test-Path $legacy) { throw 'clean runner unexpectedly already contains legacy HoyoFlux AppData' }
-          $oldPath = $env:PATH
-          $runnerIsAdministrator = [Security.Principal.WindowsPrincipal]::new(
-            [Security.Principal.WindowsIdentity]::GetCurrent()
-          ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          Write-Output "Smoke runner is in Administrators group: $runnerIsAdministrator"
-          function Start-SmokeExecutable([string]$path) {
-            if ($runnerIsAdministrator) {
-              # Product startup intentionally rejects an administrator token.
-              # Hosted Windows runners use one, so test the same binary through
-              # Windows SAFER's normal-user token without weakening that guard.
-              $runAs = Join-Path $env:SystemRoot 'System32/runas.exe'
-              $arguments = @('/trustlevel:0x20000', "`"$path`"")
-              return Start-Process -FilePath $runAs -ArgumentList $arguments `
-                -WorkingDirectory $env:RUNNER_TEMP -PassThru -Wait
-            }
-            return Start-Process -FilePath $path -WorkingDirectory $env:RUNNER_TEMP `
-              -PassThru -Wait
-          }
-          try {
-            $env:PATH = "$env:SystemRoot\System32"
-            $firstRun = Start-SmokeExecutable $exe
-            $configPath = Join-Path $smoke 'config.toml'
-            for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path $configPath); $attempt++) {
-              Start-Sleep -Seconds 1
-            }
-            if (-not (Test-Path $configPath)) {
-              $firstRunReport = Join-Path $smoke 'data/diagnostics.txt'
-              $details = if (Test-Path $firstRunReport) {
-                Get-Content -LiteralPath $firstRunReport -Raw
-              } else {
-                'No first-run diagnostic report was written.'
-              }
-              throw "first EXE launch did not create config.toml (runner administrator=$runnerIsAdministrator, exit code=$($firstRun.ExitCode)): $details"
-            }
-            $config = Get-Content (Join-Path $smoke 'config.toml') -Raw
-            $config = $config -replace 'action = "launch"', 'action = "diagnose"'
-            Set-Content -LiteralPath (Join-Path $smoke 'config.toml') -Value $config -Encoding utf8
-            $reportPath = Join-Path $smoke 'data/diagnostics.txt'
-            $null = Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
-            $diagnoseRun = Start-SmokeExecutable $exe
-            for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path $reportPath); $attempt++) {
-              Start-Sleep -Seconds 1
-            }
-            if (-not (Test-Path $reportPath)) {
-              throw "diagnose EXE launch did not write diagnostics.txt (runner administrator=$runnerIsAdministrator, exit code=$($diagnoseRun.ExitCode))"
-            }
-            $report = Get-Content -LiteralPath $reportPath -Raw
-            $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
-            if ($report -notmatch [regex]::Escape("HoyoFlux 诊断报告 $expectedVersion")) {
-              throw "diagnostic report version does not match $expectedVersion"
-            }
-            if (Test-Path $legacy) { throw 'EXE launch created AppData state' }
-          } finally {
-            $env:PATH = $oldPath
-          }
+          $exe = Join-Path $env:RUNNER_TEMP 'hoyoflux-clean-package/hoyoflux.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'clean-package EXE is missing' }
+          $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
+          & .\tools\executable_smoke.ps1 -Exe $exe -ExpectedVersion $expectedVersion
 
       - name: Publish release
         shell: pwsh

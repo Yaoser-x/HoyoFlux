@@ -42,6 +42,16 @@ jobs:
       - name: Test (release)
         run: ctest --preset release
 
+      - name: Smoke release EXE as a standard user
+        shell: pwsh
+        run: |
+          $versionHeader = Get-Content .\build\release\generated\version.hpp -Raw
+          $match = [regex]::Match($versionHeader, '(?m)^#define HOYOFLUX_VERSION_STRING "([^"]*)"\s*$')
+          if (-not $match.Success) { throw 'generated version header does not contain HOYOFLUX_VERSION_STRING' }
+          & .\tools\executable_smoke.ps1 `
+            -Exe .\build\release\src\app\hoyoflux.exe `
+            -ExpectedVersion $match.Groups[1].Value
+
   msvc-experimental:
     name: Windows / MSVC (experimental)
     runs-on: windows-2022
