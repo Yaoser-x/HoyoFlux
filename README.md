@@ -6,7 +6,7 @@
 
 > 面向 HoYoverse PC 游戏的便携式会话启动器、显示配置与运行时控制器。
 
-当前代码版本为 **1.1.0**。本版本重点完善单 EXE 便携运行、旧配置安全迁移、启动故障诊断和长会话提权稳定性。完整变更见 [更新日志](CHANGELOG.md)，游戏支持与真机验证状态见[兼容性矩阵](docs/compatibility-matrix.md)。
+当前代码版本为 **1.1.1**。本版本将发行下载改为独立 EXE 与校验文件，并继续完善单 EXE 便携运行、旧配置安全迁移、启动故障诊断和长会话提权稳定性。完整变更见 [更新日志](CHANGELOG.md)，游戏支持与真机验证状态见[兼容性矩阵](docs/compatibility-matrix.md)。
 
 HoyoFlux 是对经典原神／崩坏：星穹铁道 FPS 解锁工具的独立重实现与架构重设计。项目拥有独立的代码、架构、配置模型和 Git 历史。
 
@@ -15,6 +15,7 @@ HoyoFlux 是对经典原神／崩坏：星穹铁道 FPS 解锁工具的独立重
 已发布的 v1.1.0 仍是旧 ZIP 包，下载后需解压运行。从 v1.1.1 起，前往 [GitHub Releases](https://github.com/Yaoser-x/HoyoFlux/releases/latest) 下载：
 
 - **独立 EXE**（`hoyoflux-<版本>-windows-x64.exe`）：普通用户下载这一项即可。放进普通、可写文件夹后双击；配置和运行数据会保存在 EXE 旁边。
+- **LICENSE** 与 **THIRD_PARTY_NOTICES.md**：随程序提供的许可证和第三方声明。
 - **Source code (zip/tar.gz)**：GitHub 根据该版本源码自动生成，供检查或自行构建；它不是运行程序所需的应用压缩包。
 - **SHA256SUMS.txt**：列出独立 EXE 的 SHA-256，供校验下载完整性。
 

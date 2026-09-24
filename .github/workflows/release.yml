@@ -75,6 +75,8 @@ jobs:
 
           $exeAsset = "dist/hoyoflux-$version-windows-x64.exe"
           Copy-Item -LiteralPath .\build\release\src\app\hoyoflux.exe -Destination $exeAsset
+          Copy-Item -LiteralPath .\LICENSE -Destination 'dist/LICENSE'
+          Copy-Item -LiteralPath .\THIRD_PARTY_NOTICES.md -Destination 'dist/THIRD_PARTY_NOTICES.md'
           $exeHash = (Get-FileHash $exeAsset -Algorithm SHA256).Hash
           "$exeHash  $(Split-Path $exeAsset -Leaf)" | Set-Content -Encoding ascii "dist/SHA256SUMS.txt"
 
@@ -102,6 +104,16 @@ jobs:
           if ($standaloneHash -ne $auditedHash) {
             throw 'standalone release EXE differs from the audited build'
           }
+          foreach ($notice in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+            $releaseNotice = Join-Path 'dist' $notice
+            $auditedNotice = Join-Path $packageDirectory $notice
+            if (-not (Test-Path -LiteralPath $releaseNotice) -or -not (Test-Path -LiteralPath $auditedNotice)) {
+              throw "release license notice is missing: $notice"
+            }
+            if ((Get-FileHash $releaseNotice -Algorithm SHA256).Hash -ne (Get-FileHash $auditedNotice -Algorithm SHA256).Hash) {
+              throw "release license notice differs from the audited package: $notice"
+            }
+          }
           $checksumLines = @(Get-Content -LiteralPath 'dist/SHA256SUMS.txt')
           $expectedChecksumLine = "$standaloneHash  $(Split-Path $exeAsset -Leaf)"
           if ($checksumLines.Count -ne 1 -or $checksumLines[0] -ne $expectedChecksumLine) {
@@ -124,6 +136,8 @@ jobs:
           $releaseArgs = @(
             'release', 'create', $env:GITHUB_REF_NAME,
             "dist/hoyoflux-$version-windows-x64.exe",
+            'dist/LICENSE',
+            'dist/THIRD_PARTY_NOTICES.md',
             "dist/SHA256SUMS.txt",
             '--title', "HoyoFlux $version", '--generate-notes'
           )
