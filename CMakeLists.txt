@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(HoyoFlux VERSION 1.1.0 LANGUAGES CXX)
+project(HoyoFlux VERSION 1.1.1 LANGUAGES CXX)
 
 # Version single source (plan §1): CMake generates version.hpp; code reads
 # HOYOFLUX_VERSION_STRING from it. A non-empty prerelease value marks a

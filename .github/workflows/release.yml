@@ -69,39 +69,51 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
-          & .\tools\release_audit.ps1 -Exe .\build\release\src\app\hoyoflux.exe -PackageDirectory dist
+          $packageDirectory = 'dist/package-audit'
+          & .\tools\release_audit.ps1 -Exe .\build\release\src\app\hoyoflux.exe -PackageDirectory $packageDirectory
           if ($LASTEXITCODE -ne 0) { throw 'release artifact audit failed' }
 
-          Compress-Archive -Path dist/* -DestinationPath "dist/hoyoflux-$version-windows-x64.zip"
-          $zipHash = (Get-FileHash "dist/hoyoflux-$version-windows-x64.zip" -Algorithm SHA256).Hash
-          "$zipHash  hoyoflux-$version-windows-x64.zip" | Add-Content -Encoding ascii "dist/SHA256SUMS.txt"
+          $exeAsset = "dist/hoyoflux-$version-windows-x64.exe"
+          Copy-Item -LiteralPath .\build\release\src\app\hoyoflux.exe -Destination $exeAsset
+          $exeHash = (Get-FileHash $exeAsset -Algorithm SHA256).Hash
+          "$exeHash  $(Split-Path $exeAsset -Leaf)" | Set-Content -Encoding ascii "dist/SHA256SUMS.txt"
 
-      - name: Clean-package smoke
+      - name: Release contents smoke
         shell: pwsh
         run: |
-          $smoke = Join-Path $env:RUNNER_TEMP 'hoyoflux-clean-package'
-          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
-          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
-          Expand-Archive -Path "dist/hoyoflux-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.zip" -DestinationPath $smoke
-          $executables = @(Get-ChildItem $smoke -Recurse -File -Filter *.exe)
+          $packageDirectory = 'dist/package-audit'
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $exeAsset = "dist/hoyoflux-$version-windows-x64.exe"
+          $executables = @(Get-ChildItem $packageDirectory -Recurse -File -Filter *.exe)
           if ($executables.Count -ne 1 -or $executables[0].Name -ne 'hoyoflux.exe') {
-            throw 'package must contain exactly one hoyoflux.exe'
+            throw 'audited package contents must contain exactly one hoyoflux.exe'
           }
-          if (@(Get-ChildItem $smoke -Recurse -File -Filter *.dll).Count -ne 0) {
-            throw 'portable package must not contain runtime DLLs'
+          if (@(Get-ChildItem $packageDirectory -Recurse -File -Filter *.dll).Count -ne 0) {
+            throw 'audited package contents must not contain runtime DLLs'
           }
-          if (Test-Path (Join-Path $smoke 'config.toml')) {
-            throw 'package must allow the EXE to create first-run config.toml'
+          if (Test-Path (Join-Path $packageDirectory 'config.toml')) {
+            throw 'release contents must not include a user config.toml'
           }
           foreach ($required in @('README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'config.example.toml', 'docs/compatibility-matrix.md', 'docs/persistent-state-experiment.md', 'assets/hoyoflux.ico')) {
-            if (-not (Test-Path (Join-Path $smoke $required))) { throw "package is missing $required" }
+            if (-not (Test-Path (Join-Path $packageDirectory $required))) { throw "audited package contents are missing $required" }
+          }
+          $standaloneHash = (Get-FileHash $exeAsset -Algorithm SHA256).Hash
+          $auditedHash = (Get-FileHash $executables[0].FullName -Algorithm SHA256).Hash
+          if ($standaloneHash -ne $auditedHash) {
+            throw 'standalone release EXE differs from the audited build'
+          }
+          $checksumLines = @(Get-Content -LiteralPath 'dist/SHA256SUMS.txt')
+          $expectedChecksumLine = "$standaloneHash  $(Split-Path $exeAsset -Leaf)"
+          if ($checksumLines.Count -ne 1 -or $checksumLines[0] -ne $expectedChecksumLine) {
+            throw 'SHA256SUMS.txt must contain the exact standalone EXE hash'
           }
 
       - name: Clean-package executable smoke
         shell: pwsh
         run: |
-          $exe = Join-Path $env:RUNNER_TEMP 'hoyoflux-clean-package/hoyoflux.exe'
-          if (-not (Test-Path -LiteralPath $exe)) { throw 'clean-package EXE is missing' }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $exe = "dist/hoyoflux-$version-windows-x64.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'standalone release EXE is missing' }
           $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
           & .\tools\executable_smoke.ps1 -Exe $exe -ExpectedVersion $expectedVersion
 
@@ -111,7 +123,7 @@ jobs:
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $releaseArgs = @(
             'release', 'create', $env:GITHUB_REF_NAME,
-            "dist/hoyoflux-$version-windows-x64.zip",
+            "dist/hoyoflux-$version-windows-x64.exe",
             "dist/SHA256SUMS.txt",
             '--title', "HoyoFlux $version", '--generate-notes'
           )
